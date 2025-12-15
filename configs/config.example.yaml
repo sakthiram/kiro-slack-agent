@@ -1,0 +1,42 @@
+# Kiro Slack Agent Configuration
+# Copy this file to config.yaml and fill in your values
+
+slack:
+  # Slack Bot Token (required) - starts with xoxb-
+  bot_token: "xoxb-your-bot-token"
+  # Slack App Token (required) - starts with xapp-
+  app_token: "xapp-your-app-token"
+  # Enable Slack API debug mode
+  debug_mode: false
+
+kiro:
+  # Path to kiro-cli binary
+  binary_path: "kiro-cli"
+  # Base path for session working directories
+  session_base_path: "/tmp/kiro-sessions"
+  # Timeout for kiro-cli startup
+  startup_timeout: "30s"
+  # Timeout for kiro-cli responses
+  response_timeout: "120s"
+  # Max retries for failed operations
+  max_retries: 1
+
+session:
+  # Idle timeout before session cleanup
+  idle_timeout: "30m"
+  # Maximum total concurrent sessions
+  max_sessions_total: 100
+  # Maximum sessions per user
+  max_sessions_user: 5
+  # SQLite database path for session state
+  database_path: "/tmp/kiro-agent/sessions.db"
+
+streaming:
+  # Interval for streaming updates to Slack
+  update_interval: "500ms"
+
+logging:
+  # Log level: debug, info, warn, error
+  level: "info"
+  # Log format: json, console
+  format: "json"
