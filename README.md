@@ -41,14 +41,14 @@ The bot requires these **Bot Token Scopes** (OAuth & Permissions):
 | `chat:write` | Send messages as the bot in channels |
 | `app_mentions:read` | Receive events when users @mention the bot |
 
-**For Private Channels:**
+**For Private Channels (Not Recommended):**
 
-| Scope | Purpose |
-|-------|---------|
-| `groups:history` | Read message history in private channels where the bot is invited |
-| `groups:read` | View basic private channel info |
-| `chat:write` | Send messages as the bot in channels |
-| `app_mentions:read` | Receive events when users @mention the bot |
+| Scope | Purpose | Risk |
+|-------|---------|------|
+| `groups:history` | Read message history in private channels | **HIGH RISK** |
+| `groups:read` | View basic private channel info | Medium |
+
+> **Security Warning**: `groups:history` is flagged by Slack as a high-risk permission because it grants access to ALL messages in private channels, including historical messages from before the bot was added. Private channels often contain sensitive discussions. Consider using public channels + DMs instead.
 
 ### Optional OAuth Scopes
 
@@ -74,43 +74,39 @@ Enable **Socket Mode** and subscribe to these events:
 
 ### Security Considerations
 
-**Channel-Only Mode (Recommended)**
+**Recommended: Public Channels + Optional DMs**
 
-By default, we recommend configuring the bot for **channel-only operation** without DM write capabilities. This provides several security benefits:
+We recommend configuring the bot for **public channels with optional DM support**. This provides the best balance of security and functionality:
 
-1. **Audit Trail**: All bot interactions happen in public/shared channels where they can be monitored
-2. **Access Control**: Admins can control which channels the bot joins
-3. **Transparency**: Team members can see what the bot is being asked to do
-4. **Reduced Attack Surface**: The bot cannot be used to send unsolicited DMs
+| Mode | Security | Use Case |
+|------|----------|----------|
+| Public channels | Transparent, auditable | Team collaboration, shared context |
+| DMs (optional) | User-initiated, private | Sensitive queries users choose to make private |
+| Private channels | **Not recommended** | Requires high-risk `groups:history` permission |
 
-To configure channel-only mode, only grant these scopes:
+**Why avoid private channels?**
+- `groups:history` is a **high-risk permission** that grants access to ALL private channel messages
+- Includes historical messages from before the bot was added
+- Private channels often contain sensitive HR, financial, or confidential discussions
 
-**For public channels:**
-- `channels:history`
-- `channels:read`
-- `chat:write`
-- `app_mentions:read`
+**Recommended scopes (public channels + DMs):**
+- `channels:history` - Read public channel messages (low risk)
+- `channels:read` - View public channel info
+- `chat:write` - Send messages
+- `app_mentions:read` - Receive @mentions
+- `im:history` - Read DMs to the bot (user-initiated, medium risk)
+- `im:read` - View DM info
+- `im:write` - Send DMs (for bot responses)
 
-**For private channels (add these instead/additionally):**
-- `groups:history`
-- `groups:read`
+**Recommended events:**
+- `app_mention` - Respond to @mentions in channels
+- `message.channels` - Thread replies in public channels
+- `message.im` - Direct messages to the bot
 
-And only subscribe to these events:
-- `app_mention`
-- `message.channels` (for public channels)
-- `message.groups` (for private channels)
-
-**Enabling DM Support**
-
-If your use case requires DM support (private conversations with the bot), add these additional scopes:
-- `im:history`
-- `im:read`
-- `im:write`
-
-And subscribe to:
-- `message.im`
-
-Note: Enabling DM support means the bot can have private conversations that are not visible to workspace admins in channels.
+**Security benefits of this approach:**
+1. **Public channels**: Full transparency and audit trail for team interactions
+2. **DMs**: Users explicitly choose what to share privately with the bot
+3. **No private channel access**: Avoids high-risk `groups:history` permission
 
 ### Setup Steps
 
