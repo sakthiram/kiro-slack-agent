@@ -33,55 +33,78 @@ func NewHandler(client *Client, messageHandler MessageHandler, logger *zap.Logge
 func (h *Handler) RegisterHandlers(socketClient *socketmode.Client) {
 	go func() {
 		for evt := range socketClient.Events {
-			switch evt.Type {
-			case socketmode.EventTypeEventsAPI:
-				h.handleEventsAPI(evt, socketClient)
-			case socketmode.EventTypeConnectionError:
-				h.logger.Error("socket mode connection error", zap.Any("event", evt))
-			case socketmode.EventTypeConnecting:
-				h.logger.Info("connecting to Slack...")
-			case socketmode.EventTypeConnected:
-				h.logger.Info("connected to Slack")
-			case socketmode.EventTypeHello:
-				h.logger.Debug("received hello from Slack")
-			default:
-				h.logger.Debug("unhandled event type", zap.String("type", string(evt.Type)))
+			// Acknowledge if needed and handle the event
+			if err := h.HandleEvent(evt, socketClient); err != nil {
+				h.logger.Error("failed to handle event", zap.Error(err), zap.String("type", string(evt.Type)))
 			}
 		}
 	}()
 }
 
-// handleEventsAPI routes Events API events.
-func (h *Handler) handleEventsAPI(evt socketmode.Event, socketClient *socketmode.Client) {
-	eventsAPIEvent, ok := evt.Data.(slackevents.EventsAPIEvent)
-	if !ok {
-		h.logger.Error("failed to cast event to EventsAPIEvent")
-		return
-	}
-
-	// Acknowledge immediately
-	socketClient.Ack(*evt.Request)
-
-	switch eventsAPIEvent.Type {
-	case slackevents.CallbackEvent:
-		h.handleCallbackEvent(eventsAPIEvent)
+// HandleEvent processes a single Socket Mode event synchronously.
+// This method is exported for testing purposes.
+// The socketClient parameter is optional and only used for acknowledging Events API events.
+func (h *Handler) HandleEvent(evt socketmode.Event, socketClient *socketmode.Client) error {
+	switch evt.Type {
+	case socketmode.EventTypeEventsAPI:
+		return h.handleEventsAPIEvent(evt, socketClient)
+	case socketmode.EventTypeConnectionError:
+		h.logger.Error("socket mode connection error", zap.Any("event", evt))
+	case socketmode.EventTypeConnecting:
+		h.logger.Info("connecting to Slack...")
+	case socketmode.EventTypeConnected:
+		h.logger.Info("connected to Slack")
+	case socketmode.EventTypeHello:
+		h.logger.Debug("received hello from Slack")
 	default:
-		h.logger.Debug("unhandled events API type", zap.String("type", eventsAPIEvent.Type))
+		h.logger.Debug("unhandled event type", zap.String("type", string(evt.Type)))
 	}
+	return nil
 }
 
-// handleCallbackEvent routes callback events.
+// handleEventsAPI routes Events API events (legacy, kept for backward compatibility).
+func (h *Handler) handleEventsAPI(evt socketmode.Event, socketClient *socketmode.Client) {
+	_ = h.handleEventsAPIEvent(evt, socketClient)
+}
+
+// handleEventsAPIEvent routes Events API events and returns any error.
+func (h *Handler) handleEventsAPIEvent(evt socketmode.Event, socketClient *socketmode.Client) error {
+	eventsAPIEvent, ok := evt.Data.(slackevents.EventsAPIEvent)
+	if !ok {
+		return fmt.Errorf("failed to cast event to EventsAPIEvent")
+	}
+
+	// Acknowledge immediately if socketClient is provided
+	if socketClient != nil && evt.Request != nil {
+		socketClient.Ack(*evt.Request)
+	}
+
+	return h.handleCallbackEventSync(eventsAPIEvent)
+}
+
+// handleCallbackEvent routes callback events (legacy, kept for backward compatibility).
 func (h *Handler) handleCallbackEvent(event slackevents.EventsAPIEvent) {
+	_ = h.handleCallbackEventSync(event)
+}
+
+// handleCallbackEventSync routes callback events and returns any error.
+func (h *Handler) handleCallbackEventSync(event slackevents.EventsAPIEvent) error {
 	innerEvent := event.InnerEvent
 
-	switch ev := innerEvent.Data.(type) {
-	case *slackevents.AppMentionEvent:
-		h.handleAppMention(ev)
-	case *slackevents.MessageEvent:
-		h.handleMessage(ev)
+	switch event.Type {
+	case slackevents.CallbackEvent:
+		switch ev := innerEvent.Data.(type) {
+		case *slackevents.AppMentionEvent:
+			h.handleAppMention(ev)
+		case *slackevents.MessageEvent:
+			h.handleMessage(ev)
+		default:
+			h.logger.Debug("unhandled inner event type", zap.String("type", innerEvent.Type))
+		}
 	default:
-		h.logger.Debug("unhandled inner event type", zap.String("type", innerEvent.Type))
+		h.logger.Debug("unhandled events API type", zap.String("type", event.Type))
 	}
+	return nil
 }
 
 // handleAppMention processes @mention events.
