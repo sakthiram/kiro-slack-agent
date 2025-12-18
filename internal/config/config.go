@@ -14,6 +14,7 @@ type Config struct {
 	Kiro      KiroConfig      `mapstructure:"kiro"`
 	Session   SessionConfig   `mapstructure:"session"`
 	Streaming StreamingConfig `mapstructure:"streaming"`
+	Web       WebConfig       `mapstructure:"web"`
 	Logging   LoggingConfig   `mapstructure:"logging"`
 }
 
@@ -44,6 +45,14 @@ type SessionConfig struct {
 // StreamingConfig holds streaming output configuration.
 type StreamingConfig struct {
 	UpdateInterval time.Duration `mapstructure:"update_interval"` // default: 500ms
+}
+
+// WebConfig holds web interface configuration.
+type WebConfig struct {
+	Enabled              bool   `mapstructure:"enabled"`                 // default: false
+	ListenAddr           string `mapstructure:"listen_addr"`             // default: :8080
+	StaticPath           string `mapstructure:"static_path"`             // default: ./web/static
+	MaxObserversPerSession int  `mapstructure:"max_observers_per_session"` // default: 10
 }
 
 // LoggingConfig holds logging configuration.
@@ -113,6 +122,12 @@ func setDefaults(v *viper.Viper) {
 
 	// Streaming defaults
 	v.SetDefault("streaming.update_interval", 500*time.Millisecond)
+
+	// Web defaults
+	v.SetDefault("web.enabled", false)
+	v.SetDefault("web.listen_addr", ":8080")
+	v.SetDefault("web.static_path", "./web/static")
+	v.SetDefault("web.max_observers_per_session", 10)
 
 	// Logging defaults
 	v.SetDefault("logging.level", "info")

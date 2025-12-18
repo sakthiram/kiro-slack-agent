@@ -262,3 +262,79 @@ func TestManager_DirectoryCreation(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, info.IsDir())
 }
+
+func TestManager_Start_Stop(t *testing.T) {
+	logger := zap.NewNop()
+
+	store, err := NewSQLiteStore(":memory:", logger)
+	require.NoError(t, err)
+	defer store.Close()
+
+	cfg := &config.SessionConfig{
+		IdleTimeout:      30 * time.Minute,
+		MaxSessionsTotal: 10,
+		MaxSessionsUser:  3,
+	}
+
+	manager := NewManager(store, cfg, t.TempDir(), logger)
+
+	// Start background cleanup
+	manager.Start()
+
+	// Small delay to ensure goroutine starts
+	time.Sleep(10 * time.Millisecond)
+
+	// Stop should not panic
+	manager.Stop()
+}
+
+func TestManager_Close_NotFound(t *testing.T) {
+	manager, _ := newTestManager(t)
+	ctx := context.Background()
+
+	err := manager.Close(ctx, SessionID("nonexistent"))
+	assert.ErrorIs(t, err, ErrSessionNotFound)
+}
+
+func TestManager_UpdateActivity_NotFound(t *testing.T) {
+	manager, _ := newTestManager(t)
+	ctx := context.Background()
+
+	err := manager.UpdateActivity(ctx, SessionID("nonexistent"))
+	assert.Error(t, err)
+}
+
+func TestManager_UpdateStatus_NotFound(t *testing.T) {
+	manager, _ := newTestManager(t)
+	ctx := context.Background()
+
+	err := manager.UpdateStatus(ctx, SessionID("nonexistent"), SessionStatusProcessing)
+	assert.Error(t, err)
+}
+
+func TestManager_GetOrCreate_TotalLimit(t *testing.T) {
+	logger := zap.NewNop()
+
+	store, err := NewSQLiteStore(":memory:", logger)
+	require.NoError(t, err)
+	defer store.Close()
+
+	cfg := &config.SessionConfig{
+		IdleTimeout:      30 * time.Minute,
+		MaxSessionsTotal: 2, // Low total limit
+		MaxSessionsUser:  10,
+	}
+
+	manager := NewManager(store, cfg, t.TempDir(), logger)
+	ctx := context.Background()
+
+	// Create max total sessions (different users)
+	_, _, err = manager.GetOrCreate(ctx, "C123", "1.1", "U1")
+	require.NoError(t, err)
+	_, _, err = manager.GetOrCreate(ctx, "C123", "1.2", "U2")
+	require.NoError(t, err)
+
+	// Third session should fail due to total limit
+	_, _, err = manager.GetOrCreate(ctx, "C123", "1.3", "U3")
+	assert.ErrorIs(t, err, ErrSessionLimitReached)
+}

@@ -115,6 +115,12 @@ slack:
 	assert.Equal(t, 5, cfg.Session.MaxSessionsUser)
 	assert.Equal(t, "info", cfg.Logging.Level)
 	assert.Equal(t, "json", cfg.Logging.Format)
+
+	// Check web defaults
+	assert.False(t, cfg.Web.Enabled)
+	assert.Equal(t, ":8080", cfg.Web.ListenAddr)
+	assert.Equal(t, "./web/static", cfg.Web.StaticPath)
+	assert.Equal(t, 10, cfg.Web.MaxObserversPerSession)
 }
 
 func TestLoad_InvalidLogLevel(t *testing.T) {

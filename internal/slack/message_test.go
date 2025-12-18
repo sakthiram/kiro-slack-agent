@@ -225,3 +225,49 @@ func TestIsBotMessage(t *testing.T) {
 		})
 	}
 }
+
+func TestFormatResponse(t *testing.T) {
+	tests := []struct {
+		name string
+		text string
+		want string
+	}{
+		{
+			name: "plain text unchanged",
+			text: "hello world",
+			want: "hello world",
+		},
+		{
+			name: "markdown preserved",
+			text: "*bold* and _italic_",
+			want: "*bold* and _italic_",
+		},
+		{
+			name: "code blocks preserved",
+			text: "```\ncode\n```",
+			want: "```\ncode\n```",
+		},
+		{
+			name: "empty string",
+			text: "",
+			want: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := FormatResponse(tt.text)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestTruncateMessage_NegativeMax(t *testing.T) {
+	// Negative maxLen should use default
+	got := TruncateMessage("hello", -5)
+	assert.Equal(t, "hello", got)
+}
+
+func TestSlackMessageMaxLength(t *testing.T) {
+	assert.Equal(t, 40000, SlackMessageMaxLength)
+}

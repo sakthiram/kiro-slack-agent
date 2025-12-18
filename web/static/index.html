@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kiro Slack Agent - Session Monitor</title>
+
+    <!-- xterm.js from CDN -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css">
+    <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
+
+    <!-- Custom styles -->
+    <link rel="stylesheet" href="/static/css/terminal.css">
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header class="header">
+            <h1>Kiro Slack Agent Monitor</h1>
+            <div class="status-container">
+                <span class="status-label">Status:</span>
+                <span id="connection-status" class="status-indicator status-disconnected">Disconnected</span>
+            </div>
+        </header>
+
+        <!-- Main content area -->
+        <div class="main-content">
+            <!-- Session list panel -->
+            <aside class="session-panel">
+                <div class="panel-header">
+                    <h2>Active Sessions</h2>
+                    <button id="refresh-sessions" class="btn-icon" title="Refresh">
+                        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                            <path d="M13.65 2.35A7.958 7.958 0 0 0 8 0a8 8 0 1 0 7.938 9.13h-1.015a7 7 0 1 1-1.423-5.42L11 6h5V1l-2.35 1.35z"/>
+                        </svg>
+                    </button>
+                </div>
+                <div id="session-list" class="session-list">
+                    <div class="loading">Loading sessions...</div>
+                </div>
+            </aside>
+
+            <!-- Terminal viewer panel -->
+            <main class="terminal-panel">
+                <div class="panel-header">
+                    <h2 id="terminal-title">Terminal Output</h2>
+                    <div class="terminal-controls">
+                        <span id="observer-count" class="observer-count"></span>
+                        <button id="detach-button" class="btn-secondary" disabled>Detach</button>
+                        <button id="clear-button" class="btn-secondary">Clear</button>
+                    </div>
+                </div>
+                <div id="terminal-container" class="terminal-container"></div>
+                <div id="terminal-placeholder" class="terminal-placeholder">
+                    <p>Select a session from the list to view terminal output</p>
+                </div>
+            </main>
+        </div>
+    </div>
+
+    <!-- Scripts -->
+    <script src="/static/js/api.js"></script>
+    <script src="/static/js/terminal.js"></script>
+    <script src="/static/js/app.js"></script>
+</body>
+</html>

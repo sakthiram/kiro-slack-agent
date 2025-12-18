@@ -14,6 +14,7 @@ import (
 	"github.com/sakthiram/kiro-slack-agent/internal/session"
 	"github.com/sakthiram/kiro-slack-agent/internal/slack"
 	"github.com/sakthiram/kiro-slack-agent/internal/streaming"
+	"github.com/sakthiram/kiro-slack-agent/internal/web"
 	"go.uber.org/zap"
 )
 
@@ -62,26 +63,42 @@ func main() {
 		logger.Fatal("failed to create slack client", zap.Error(err))
 	}
 
-	// 6. Track active Kiro bridges per session
+	// 6. Create web observer registry
+	observerRegistry := web.NewObserverRegistry(cfg.Web.MaxObserversPerSession, logger)
+
+	// 7. Track active Kiro bridges per session (now using ObservableProcess)
 	bridges := &bridgeCache{
-		bridges: make(map[session.SessionID]kiro.Bridge),
-		logger:  logger,
+		bridges:  make(map[session.SessionID]*kiro.ObservableProcess),
+		logger:   logger,
+		registry: observerRegistry,
 	}
 
-	// 7. Create message handler that wires everything together
+	// 8. Create web server (if enabled)
+	var webServer *web.Server
+	if cfg.Web.Enabled {
+		webServer = web.NewServer(&cfg.Web, observerRegistry, sessionMgr, logger)
+		ctx := context.Background()
+		if err := webServer.Start(ctx); err != nil {
+			logger.Error("failed to start web server", zap.Error(err))
+		} else {
+			logger.Info("web server started", zap.String("address", webServer.Addr()))
+		}
+	}
+
+	// 9. Create message handler that wires everything together
 	messageHandler := func(ctx context.Context, msg *slack.MessageEvent) error {
 		return processMessage(ctx, msg, cfg, slackClient, sessionMgr, bridges, logger)
 	}
 
-	// 8. Create Slack handler
+	// 10. Create Slack handler
 	handler := slack.NewHandler(slackClient, messageHandler, logger)
 
-	// 9. Setup Socket Mode
+	// 11. Setup Socket Mode
 	api := slack.NewSlackAPI(cfg.Slack.BotToken, cfg.Slack.AppToken, cfg.Slack.DebugMode)
 	socketClient := slack.NewSocketModeClient(api, cfg.Slack.DebugMode)
 	handler.RegisterHandlers(socketClient)
 
-	// 10. Handle shutdown gracefully
+	// 12. Handle shutdown gracefully
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -94,9 +111,17 @@ func main() {
 
 		// Close all bridges
 		bridges.CloseAll()
+
+		// Stop web server if running
+		if webServer != nil {
+			shutdownCtx := context.Background()
+			if err := webServer.Stop(shutdownCtx); err != nil {
+				logger.Error("failed to stop web server", zap.Error(err))
+			}
+		}
 	}()
 
-	// 11. Run Socket Mode
+	// 13. Run Socket Mode
 	logger.Info("connected, listening for events...")
 	errChan := make(chan error, 1)
 	slack.StartSocketMode(socketClient, errChan)
@@ -110,23 +135,28 @@ func main() {
 }
 
 // bridgeCache manages active Kiro bridges per session.
+// Now uses ObservableProcess to enable web observer broadcasting.
 type bridgeCache struct {
-	mu      sync.RWMutex
-	bridges map[session.SessionID]kiro.Bridge
-	logger  *zap.Logger
+	mu       sync.RWMutex
+	bridges  map[session.SessionID]*kiro.ObservableProcess
+	logger   *zap.Logger
+	registry *web.ObserverRegistry
 }
 
-func (c *bridgeCache) Get(id session.SessionID) (kiro.Bridge, bool) {
+func (c *bridgeCache) Get(id session.SessionID) (*kiro.ObservableProcess, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	b, ok := c.bridges[id]
 	return b, ok
 }
 
-func (c *bridgeCache) Set(id session.SessionID, bridge kiro.Bridge) {
+func (c *bridgeCache) Set(id session.SessionID, bridge *kiro.ObservableProcess) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.bridges[id] = bridge
+
+	// Start goroutine to broadcast observable output to web observers
+	go c.broadcastToWebObservers(id, bridge)
 }
 
 func (c *bridgeCache) Delete(id session.SessionID) {
@@ -145,7 +175,34 @@ func (c *bridgeCache) CloseAll() {
 				zap.Error(err))
 		}
 	}
-	c.bridges = make(map[session.SessionID]kiro.Bridge)
+	c.bridges = make(map[session.SessionID]*kiro.ObservableProcess)
+}
+
+// broadcastToWebObservers creates an observer on the ObservableProcess
+// and forwards all output to the web observer registry for WebSocket clients.
+func (c *bridgeCache) broadcastToWebObservers(sessionID session.SessionID, bridge *kiro.ObservableProcess) {
+	// Generate unique observer ID for this bridge connection
+	observerID := "bridge-" + string(sessionID)
+
+	// Register as observer on the observable process
+	outputChan := bridge.AddObserver(observerID)
+
+	c.logger.Debug("started broadcasting to web observers",
+		zap.String("session_id", string(sessionID)),
+		zap.String("observer_id", observerID),
+	)
+
+	// Forward all output from observable process to web observers
+	for data := range outputChan {
+		c.registry.Broadcast(sessionID, data)
+	}
+
+	// Clean up when done
+	bridge.RemoveObserver(observerID)
+	c.logger.Debug("stopped broadcasting to web observers",
+		zap.String("session_id", string(sessionID)),
+		zap.String("observer_id", observerID),
+	)
 }
 
 // processMessage handles a message from Slack.
@@ -194,19 +251,24 @@ func processMessage(
 		return err
 	}
 
-	// Get or create Kiro bridge
+	// Get or create Kiro bridge (now using ObservableProcess)
 	bridge, ok := bridges.Get(sess.ID)
 	if !ok || !bridge.IsRunning() {
-		// Create new bridge with retry wrapper
-		process := kiro.NewProcess(sess.KiroSessionDir, &cfg.Kiro, logger)
-		bridge = kiro.NewRetryBridge(process, cfg.Kiro.MaxRetries, logger)
+		// Create ObservableProcess which wraps Process and enables broadcasting
+		observable := kiro.NewObservableProcess(sess.KiroSessionDir, &cfg.Kiro, logger)
 
-		if err := bridge.Start(ctx); err != nil {
+		// Wrap with retry bridge for resilience
+		var retryBridge kiro.Bridge = kiro.NewRetryBridge(observable, cfg.Kiro.MaxRetries, logger)
+
+		if err := retryBridge.Start(ctx); err != nil {
 			logger.Error("failed to start Kiro", zap.Error(err))
 			streamer.Error(ctx, err)
 			return err
 		}
-		bridges.Set(sess.ID, bridge)
+
+		// Store the observable process (not the retry wrapper) so we can add observers
+		bridges.Set(sess.ID, observable)
+		bridge = observable
 
 		if isNew {
 			logger.Info("created new Kiro session")

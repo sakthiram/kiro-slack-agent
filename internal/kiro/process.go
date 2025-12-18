@@ -54,9 +54,28 @@ func (p *Process) Start(ctx context.Context) error {
 	// Build command
 	p.cmd = exec.CommandContext(ctx, p.binaryPath)
 	p.cmd.Dir = p.sessionDir
+
+	// Get Q_TERM version from environment or use kiro-cli version
+	qTermVersion := os.Getenv("Q_TERM")
+	if qTermVersion == "" {
+		// Try to get version from kiro-cli --version
+		if out, err := exec.Command(p.binaryPath, "--version").Output(); err == nil {
+			// Output is like "kiro-cli 1.22.0"
+			parts := strings.Fields(string(out))
+			if len(parts) >= 2 {
+				qTermVersion = parts[1]
+			}
+		}
+		if qTermVersion == "" {
+			qTermVersion = "1.22.0" // fallback
+		}
+	}
+
 	p.cmd.Env = append(os.Environ(),
 		"TERM=xterm-256color",
 		"COLORTERM=truecolor",
+		// Kiro CLI terminal integration - pretend we're in a kiro terminal
+		"Q_TERM="+qTermVersion,
 	)
 
 	// Start with PTY
@@ -77,7 +96,7 @@ func (p *Process) Start(ctx context.Context) error {
 
 	// Wait for startup (initial prompt)
 	if err := p.waitForStartup(ctx); err != nil {
-		p.Close()
+		p.closeLocked()
 		return fmt.Errorf("failed to wait for startup: %w", err)
 	}
 
@@ -227,7 +246,12 @@ func (p *Process) IsRunning() bool {
 func (p *Process) Close() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	return p.closeLocked()
+}
 
+// closeLocked terminates the process without acquiring the mutex.
+// Caller must hold p.mu.
+func (p *Process) closeLocked() error {
 	if !p.running {
 		return nil
 	}

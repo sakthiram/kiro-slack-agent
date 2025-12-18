@@ -35,6 +35,14 @@ streaming:
   # Interval for streaming updates to Slack
   update_interval: "500ms"
 
+# Web Observer (optional)
+# Enable to watch agent sessions in real-time via browser
+web:
+  enabled: false                    # Set to true to enable web observer
+  listen_addr: ":8080"             # HTTP server address
+  static_path: "./web/static"      # Path to static web files
+  max_observers_per_session: 10    # Max concurrent viewers per session
+
 logging:
   # Log level: debug, info, warn, error
   level: "info"
