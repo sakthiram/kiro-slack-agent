@@ -18,6 +18,7 @@ type Handler struct {
 	client         *Client
 	messageHandler MessageHandler
 	logger         *zap.Logger
+	syncMode       bool // When true, process messages synchronously
 }
 
 // NewHandler creates a new event handler.
@@ -27,6 +28,13 @@ func NewHandler(client *Client, messageHandler MessageHandler, logger *zap.Logge
 		messageHandler: messageHandler,
 		logger:         logger,
 	}
+}
+
+// SetSyncMode enables or disables synchronous message processing.
+// When enabled, messages are processed synchronously (blocking) instead of async.
+// This is useful for tests that need deterministic behavior.
+func (h *Handler) SetSyncMode(enabled bool) {
+	h.syncMode = enabled
 }
 
 // RegisterHandlers sets up Socket Mode event handlers.
@@ -119,13 +127,21 @@ func (h *Handler) handleAppMention(ev *slackevents.AppMentionEvent) {
 
 	msg := ParseAppMention(ev, h.client.GetBotUserID())
 
-	// Process asynchronously
-	go func() {
+	if h.syncMode {
+		// Process synchronously for tests
 		ctx := context.Background()
 		if err := h.messageHandler(ctx, msg); err != nil {
 			logger.Error("failed to process app mention", zap.Error(err))
 		}
-	}()
+	} else {
+		// Process asynchronously
+		go func() {
+			ctx := context.Background()
+			if err := h.messageHandler(ctx, msg); err != nil {
+				logger.Error("failed to process app mention", zap.Error(err))
+			}
+		}()
+	}
 }
 
 // handleMessage processes direct message events.
@@ -155,13 +171,21 @@ func (h *Handler) handleMessage(ev *slackevents.MessageEvent) {
 
 	msg := ParseDirectMessage(ev)
 
-	// Process asynchronously
-	go func() {
+	if h.syncMode {
+		// Process synchronously for tests
 		ctx := context.Background()
 		if err := h.messageHandler(ctx, msg); err != nil {
 			logger.Error("failed to process direct message", zap.Error(err))
 		}
-	}()
+	} else {
+		// Process asynchronously
+		go func() {
+			ctx := context.Background()
+			if err := h.messageHandler(ctx, msg); err != nil {
+				logger.Error("failed to process direct message", zap.Error(err))
+			}
+		}()
+	}
 }
 
 // NewSocketModeClient creates a new Socket Mode client.

@@ -1,0 +1,140 @@
+name: E2E Tests
+
+# This is an example workflow for running E2E tests
+# Copy this file to .github/workflows/e2e-tests.yml and configure secrets
+
+on:
+  # Run E2E tests on schedule (e.g., nightly)
+  schedule:
+    - cron: '0 2 * * *'  # Run at 2 AM UTC daily
+
+  # Allow manual trigger
+  workflow_dispatch:
+    inputs:
+      test_name:
+        description: 'Specific test to run (optional)'
+        required: false
+        type: string
+
+  # Optionally run on specific branches
+  push:
+    branches:
+      - main
+      - develop
+    paths:
+      - 'internal/**'
+      - 'cmd/**'
+      - 'configs/**'
+
+jobs:
+  e2e-tests:
+    name: Run E2E Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: true
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Build server
+        run: make build
+
+      - name: Start bot server
+        run: |
+          ./bin/server &
+          SERVER_PID=$!
+          echo "SERVER_PID=$SERVER_PID" >> $GITHUB_ENV
+
+          # Wait for server to be ready
+          echo "Waiting for server to start..."
+          sleep 15
+
+          # Verify server is running
+          if ! ps -p $SERVER_PID > /dev/null; then
+            echo "Server failed to start!"
+            exit 1
+          fi
+
+          echo "Server started with PID: $SERVER_PID"
+        env:
+          KIRO_AGENT_SLACK_BOT_TOKEN: ${{ secrets.E2E_SLACK_BOT_TOKEN }}
+          KIRO_AGENT_SLACK_APP_TOKEN: ${{ secrets.E2E_SLACK_APP_TOKEN }}
+          KIRO_AGENT_LOGGING_LEVEL: debug
+
+      - name: Run E2E tests
+        run: |
+          if [ -n "${{ inputs.test_name }}" ]; then
+            echo "Running specific test: ${{ inputs.test_name }}"
+            go test -v -tags=e2e -timeout=20m -run "${{ inputs.test_name }}" ./internal/e2e
+          else
+            echo "Running all E2E tests"
+            make test-e2e
+          fi
+        env:
+          E2E_TEST: true
+          TEST_CHANNEL_ID: ${{ secrets.E2E_TEST_CHANNEL_ID }}
+          BOT_USER_ID: ${{ secrets.E2E_BOT_USER_ID }}
+          SLACK_BOT_TOKEN: ${{ secrets.E2E_SLACK_BOT_TOKEN }}
+          SLACK_APP_TOKEN: ${{ secrets.E2E_SLACK_APP_TOKEN }}
+
+      - name: Stop bot server
+        if: always()
+        run: |
+          if [ -n "$SERVER_PID" ]; then
+            echo "Stopping server (PID: $SERVER_PID)"
+            kill $SERVER_PID || true
+
+            # Wait for graceful shutdown
+            sleep 2
+
+            # Force kill if still running
+            kill -9 $SERVER_PID 2>/dev/null || true
+          fi
+
+      - name: Upload test logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-test-logs
+          path: |
+            /tmp/kiro-agent/**/*.log
+            /tmp/kiro-sessions/**/*.log
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Notify on failure
+        if: failure() && github.event_name == 'schedule'
+        uses: slackapi/slack-github-action@v1
+        with:
+          webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
+          payload: |
+            {
+              "text": "E2E Tests Failed",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": ":x: *E2E Tests Failed*\n\nWorkflow: ${{ github.workflow }}\nRun: <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Details>"
+                  }
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+# Required GitHub Secrets:
+# - E2E_SLACK_BOT_TOKEN: Slack bot token (xoxb-...)
+# - E2E_SLACK_APP_TOKEN: Slack app token (xapp-...)
+# - E2E_TEST_CHANNEL_ID: Test channel ID (C...)
+# - E2E_BOT_USER_ID: Bot user ID (U...)
+# - SLACK_WEBHOOK_URL: (Optional) Webhook for failure notifications

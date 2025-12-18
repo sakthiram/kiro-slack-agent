@@ -28,6 +28,7 @@ type ObserverV2 struct {
 	SendChan  chan []byte
 	Done      chan struct{}
 	CreatedAt time.Time
+	closeOnce sync.Once
 }
 
 // NewObserverV2 creates a new ObserverV2 with a unique ID
@@ -41,10 +42,31 @@ func NewObserverV2(sessionID string) *ObserverV2 {
 	}
 }
 
-// Close closes the observer's channels
+// Close closes the observer's Done channel to signal closure
+// SendChan is not closed to avoid race conditions with concurrent sends
+// Consumers should check Done channel before reading from SendChan
 func (o *ObserverV2) Close() {
-	close(o.Done)
-	close(o.SendChan)
+	o.closeOnce.Do(func() {
+		close(o.Done)
+		// Note: We intentionally do NOT close SendChan here to avoid races
+		// with concurrent Broadcast operations. The channel will be garbage
+		// collected when the observer is no longer referenced.
+	})
+}
+
+// Send attempts to send data to the observer's channel non-blocking
+// Returns true if sent, false if channel is full or closed
+func (o *ObserverV2) Send(data []byte) bool {
+	select {
+	case o.SendChan <- data:
+		return true
+	case <-o.Done:
+		// Observer is closed
+		return false
+	default:
+		// Channel full
+		return false
+	}
 }
 
 // ObserverRegistryV2 manages all observer connections across sessions
@@ -132,12 +154,18 @@ func (r *ObserverRegistryV2) Unregister(sessionID, observerID string) {
 // Broadcast sends data to all observers of a session (non-blocking)
 func (r *ObserverRegistryV2) Broadcast(sessionID string, data []byte) {
 	r.mu.RLock()
-	observers := r.sessions[sessionID]
-	r.mu.RUnlock()
-
-	if len(observers) == 0 {
+	sessionObservers := r.sessions[sessionID]
+	if len(sessionObservers) == 0 {
+		r.mu.RUnlock()
 		return
 	}
+
+	// Make a copy of the observers map to avoid holding the lock during broadcast
+	observers := make(map[string]*ObserverV2, len(sessionObservers))
+	for id, obs := range sessionObservers {
+		observers[id] = obs
+	}
+	r.mu.RUnlock()
 
 	r.logger.Debug("broadcasting to observers",
 		zap.String("session_id", sessionID),
@@ -146,12 +174,9 @@ func (r *ObserverRegistryV2) Broadcast(sessionID string, data []byte) {
 
 	// Broadcast to all observers (non-blocking)
 	for observerID, observer := range observers {
-		select {
-		case observer.SendChan <- data:
-			// Successfully sent
-		default:
-			// Channel full, skip this observer to avoid blocking
-			r.logger.Warn("observer channel full, skipping message",
+		if !observer.Send(data) {
+			// Failed to send - observer is either closed or channel is full
+			r.logger.Warn("failed to send to observer",
 				zap.String("session_id", sessionID),
 				zap.String("observer_id", observerID))
 		}

@@ -11,9 +11,9 @@ import (
 	"github.com/sakthiram/kiro-slack-agent/internal/config"
 	"github.com/sakthiram/kiro-slack-agent/internal/kiro"
 	"github.com/sakthiram/kiro-slack-agent/internal/logging"
+	"github.com/sakthiram/kiro-slack-agent/internal/processor"
 	"github.com/sakthiram/kiro-slack-agent/internal/session"
 	"github.com/sakthiram/kiro-slack-agent/internal/slack"
-	"github.com/sakthiram/kiro-slack-agent/internal/streaming"
 	"github.com/sakthiram/kiro-slack-agent/internal/web"
 	"go.uber.org/zap"
 )
@@ -85,20 +85,23 @@ func main() {
 		}
 	}
 
-	// 9. Create message handler that wires everything together
+	// 9. Create message processor
+	messageProcessor := processor.NewMessageProcessor(slackClient, sessionMgr, bridges, cfg, logger)
+
+	// 10. Create message handler that wires everything together
 	messageHandler := func(ctx context.Context, msg *slack.MessageEvent) error {
-		return processMessage(ctx, msg, cfg, slackClient, sessionMgr, bridges, logger)
+		return messageProcessor.ProcessMessage(ctx, msg)
 	}
 
-	// 10. Create Slack handler
+	// 11. Create Slack handler
 	handler := slack.NewHandler(slackClient, messageHandler, logger)
 
-	// 11. Setup Socket Mode
+	// 12. Setup Socket Mode
 	api := slack.NewSlackAPI(cfg.Slack.BotToken, cfg.Slack.AppToken, cfg.Slack.DebugMode)
 	socketClient := slack.NewSocketModeClient(api, cfg.Slack.DebugMode)
 	handler.RegisterHandlers(socketClient)
 
-	// 12. Handle shutdown gracefully
+	// 13. Handle shutdown gracefully
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -121,7 +124,7 @@ func main() {
 		}
 	}()
 
-	// 13. Run Socket Mode
+	// 14. Run Socket Mode
 	logger.Info("connected, listening for events...")
 	errChan := make(chan error, 1)
 	slack.StartSocketMode(socketClient, errChan)
@@ -136,12 +139,20 @@ func main() {
 
 // bridgeCache manages active Kiro bridges per session.
 // Now uses ObservableProcess to enable web observer broadcasting.
+// Implements web.BridgeProvider interface for WebSocket handler access.
+// Implements processor.BridgeCache interface for MessageProcessor.
 type bridgeCache struct {
 	mu       sync.RWMutex
 	bridges  map[session.SessionID]*kiro.ObservableProcess
 	logger   *zap.Logger
 	registry *web.ObserverRegistry
 }
+
+// Ensure bridgeCache implements BridgeProvider
+var _ web.BridgeProvider = (*bridgeCache)(nil)
+
+// Ensure bridgeCache implements processor.BridgeCache
+var _ processor.BridgeCache = (*bridgeCache)(nil)
 
 func (c *bridgeCache) Get(id session.SessionID) (*kiro.ObservableProcess, bool) {
 	c.mu.RLock()
@@ -205,100 +216,48 @@ func (c *bridgeCache) broadcastToWebObservers(sessionID session.SessionID, bridg
 	)
 }
 
-// processMessage handles a message from Slack.
-func processMessage(
-	ctx context.Context,
-	msg *slack.MessageEvent,
-	cfg *config.Config,
-	slackClient *slack.Client,
-	sessionMgr *session.Manager,
-	bridges *bridgeCache,
-	logger *zap.Logger,
-) error {
-	logger = logger.With(
-		zap.String("channel_id", msg.ChannelID),
-		zap.String("thread_ts", msg.ThreadTS),
-		zap.String("user_id", msg.UserID),
-	)
+// BridgeProvider interface implementation (for web.BridgeProvider)
 
-	// Determine thread TS (use message TS if no thread)
-	threadTS := msg.ThreadTS
-	if threadTS == "" {
-		threadTS = msg.MessageTS
+// GetScrollback returns the current scrollback buffer for a session.
+func (c *bridgeCache) GetScrollback(sessionID session.SessionID) []byte {
+	c.mu.RLock()
+	bridge, ok := c.bridges[sessionID]
+	c.mu.RUnlock()
+
+	if !ok || bridge == nil {
+		return nil
 	}
+	return bridge.GetScrollback()
+}
 
-	// Get or create session
-	sess, isNew, err := sessionMgr.GetOrCreate(ctx, msg.ChannelID, threadTS, msg.UserID)
-	if err != nil {
-		logger.Error("failed to get/create session", zap.Error(err))
-		// Post error to user
-		slackClient.PostMessage(ctx, msg.ChannelID, ":x: Error: Unable to create session. Please try again.",
-			slack.WithThreadTS(threadTS))
-		return err
+// AddObserver registers an observer for a session and returns a channel
+// that receives output data.
+func (c *bridgeCache) AddObserver(sessionID session.SessionID, observerID string) <-chan []byte {
+	c.mu.RLock()
+	bridge, ok := c.bridges[sessionID]
+	c.mu.RUnlock()
+
+	if !ok || bridge == nil {
+		return nil
 	}
+	return bridge.AddObserver(observerID)
+}
 
-	// Update session status to processing
-	sessionMgr.UpdateStatus(ctx, sess.ID, session.SessionStatusProcessing)
-	defer sessionMgr.UpdateStatus(ctx, sess.ID, session.SessionStatusActive)
+// RemoveObserver unregisters an observer for a session.
+func (c *bridgeCache) RemoveObserver(sessionID session.SessionID, observerID string) {
+	c.mu.RLock()
+	bridge, ok := c.bridges[sessionID]
+	c.mu.RUnlock()
 
-	// Create streamer for this response
-	streamer := streaming.NewStreamer(slackClient, &cfg.Streaming, logger)
-
-	// Start streaming response
-	_, err = streamer.Start(ctx, msg.ChannelID, threadTS)
-	if err != nil {
-		logger.Error("failed to start streamer", zap.Error(err))
-		return err
+	if ok && bridge != nil {
+		bridge.RemoveObserver(observerID)
 	}
+}
 
-	// Get or create Kiro bridge (now using ObservableProcess)
-	bridge, ok := bridges.Get(sess.ID)
-	if !ok || !bridge.IsRunning() {
-		// Create ObservableProcess which wraps Process and enables broadcasting
-		observable := kiro.NewObservableProcess(sess.KiroSessionDir, &cfg.Kiro, logger)
-
-		// Wrap with retry bridge for resilience
-		var retryBridge kiro.Bridge = kiro.NewRetryBridge(observable, cfg.Kiro.MaxRetries, logger)
-
-		if err := retryBridge.Start(ctx); err != nil {
-			logger.Error("failed to start Kiro", zap.Error(err))
-			streamer.Error(ctx, err)
-			return err
-		}
-
-		// Store the observable process (not the retry wrapper) so we can add observers
-		bridges.Set(sess.ID, observable)
-		bridge = observable
-
-		if isNew {
-			logger.Info("created new Kiro session")
-		}
-	}
-
-	// Send message to Kiro and stream response
-	var finalResponse string
-	err = bridge.SendMessage(ctx, msg.Text, func(chunk string, isComplete bool) {
-		finalResponse = chunk
-		if !isComplete {
-			streamer.Update(ctx, chunk)
-		}
-	})
-
-	if err != nil {
-		logger.Error("Kiro error", zap.Error(err))
-		streamer.Error(ctx, err)
-
-		// Remove failed bridge
-		bridges.Delete(sess.ID)
-		bridge.Close()
-		return err
-	}
-
-	// Complete streaming with final response
-	if err := streamer.Complete(ctx, finalResponse); err != nil {
-		logger.Error("failed to complete streamer", zap.Error(err))
-		return err
-	}
-
-	return nil
+// HasBridge returns true if a session has an active bridge.
+func (c *bridgeCache) HasBridge(sessionID session.SessionID) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	bridge, ok := c.bridges[sessionID]
+	return ok && bridge != nil
 }

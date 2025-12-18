@@ -338,3 +338,226 @@ func TestManager_GetOrCreate_TotalLimit(t *testing.T) {
 	_, _, err = manager.GetOrCreate(ctx, "C123", "1.3", "U3")
 	assert.ErrorIs(t, err, ErrSessionLimitReached)
 }
+
+func TestManager_GetOrCreate_ContextCancellation(t *testing.T) {
+	manager, _ := newTestManager(t)
+
+	// Create a cancelled context
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	// Should handle cancelled context gracefully
+	_, _, err := manager.GetOrCreate(ctx, "C123", "1234567890.123456", "U456")
+
+	// The actual behavior depends on the store implementation
+	// but it should either succeed or fail gracefully
+	if err != nil {
+		// If it fails, it should be due to context cancellation
+		assert.Contains(t, err.Error(), "context")
+	}
+}
+
+func TestManager_Get_ContextCancellation(t *testing.T) {
+	manager, _ := newTestManager(t)
+	ctx := context.Background()
+
+	// Create a session first
+	session, _, err := manager.GetOrCreate(ctx, "C123", "1234567890.123456", "U456")
+	require.NoError(t, err)
+
+	// Use cancelled context
+	ctxCancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	// Get should handle cancelled context
+	_, err = manager.Get(ctxCancelled, session.ID)
+
+	// May succeed or fail depending on store implementation
+	// but should not panic
+	_ = err
+}
+
+func TestManager_UpdateActivity_ContextCancellation(t *testing.T) {
+	manager, _ := newTestManager(t)
+	ctx := context.Background()
+
+	// Create a session first
+	session, _, err := manager.GetOrCreate(ctx, "C123", "1234567890.123456", "U456")
+	require.NoError(t, err)
+
+	// Use cancelled context
+	ctxCancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	// UpdateActivity should handle cancelled context
+	err = manager.UpdateActivity(ctxCancelled, session.ID)
+
+	// May succeed or fail depending on store implementation
+	_ = err
+}
+
+func TestManager_UpdateStatus_ContextCancellation(t *testing.T) {
+	manager, _ := newTestManager(t)
+	ctx := context.Background()
+
+	// Create a session first
+	session, _, err := manager.GetOrCreate(ctx, "C123", "1234567890.123456", "U456")
+	require.NoError(t, err)
+
+	// Use cancelled context
+	ctxCancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	// UpdateStatus should handle cancelled context
+	err = manager.UpdateStatus(ctxCancelled, session.ID, SessionStatusProcessing)
+
+	// May succeed or fail depending on store implementation
+	_ = err
+}
+
+func TestManager_Close_ContextCancellation(t *testing.T) {
+	manager, _ := newTestManager(t)
+	ctx := context.Background()
+
+	// Create a session first
+	session, _, err := manager.GetOrCreate(ctx, "C123", "1234567890.123456", "U456")
+	require.NoError(t, err)
+
+	// Use cancelled context
+	ctxCancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	// Close should handle cancelled context
+	err = manager.Close(ctxCancelled, session.ID)
+
+	// May succeed or fail depending on store implementation
+	_ = err
+}
+
+func TestManager_Cleanup_ContextCancellation(t *testing.T) {
+	logger := zap.NewNop()
+
+	store, err := NewSQLiteStore(":memory:", logger)
+	require.NoError(t, err)
+	defer store.Close()
+
+	cfg := &config.SessionConfig{
+		IdleTimeout:      time.Millisecond,
+		MaxSessionsTotal: 10,
+		MaxSessionsUser:  3,
+	}
+
+	manager := NewManager(store, cfg, t.TempDir(), logger)
+	ctx := context.Background()
+
+	// Create a session
+	_, _, err = manager.GetOrCreate(ctx, "C123", "1234567890.123456", "U456")
+	require.NoError(t, err)
+
+	// Wait for idle timeout
+	time.Sleep(10 * time.Millisecond)
+
+	// Use cancelled context
+	ctxCancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	// Cleanup should handle cancelled context gracefully
+	err = manager.Cleanup(ctxCancelled)
+
+	// May succeed or fail depending on store implementation
+	_ = err
+}
+
+func TestManager_List_ContextCancellation(t *testing.T) {
+	manager, _ := newTestManager(t)
+	ctx := context.Background()
+
+	// Create some sessions
+	_, _, _ = manager.GetOrCreate(ctx, "C123", "1.1", "U456")
+	_, _, _ = manager.GetOrCreate(ctx, "C123", "1.2", "U789")
+
+	// Use cancelled context
+	ctxCancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	// List should handle cancelled context
+	_, err := manager.List(ctxCancelled)
+
+	// May succeed or fail depending on store implementation
+	_ = err
+}
+
+func TestManager_ListByUser_ContextCancellation(t *testing.T) {
+	manager, _ := newTestManager(t)
+	ctx := context.Background()
+
+	// Create sessions
+	_, _, _ = manager.GetOrCreate(ctx, "C123", "1.1", "U456")
+	_, _, _ = manager.GetOrCreate(ctx, "C123", "1.2", "U456")
+
+	// Use cancelled context
+	ctxCancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	// ListByUser should handle cancelled context
+	_, err := manager.ListByUser(ctxCancelled, "U456")
+
+	// May succeed or fail depending on store implementation
+	_ = err
+}
+
+func TestManager_GetOrCreate_ContextTimeout(t *testing.T) {
+	manager, _ := newTestManager(t)
+
+	// Create a context with very short timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Nanosecond)
+	defer cancel()
+
+	// Wait for timeout
+	time.Sleep(1 * time.Millisecond)
+
+	// Should handle timeout gracefully
+	_, _, err := manager.GetOrCreate(ctx, "C123", "1234567890.123456", "U456")
+
+	// May succeed if operation is fast, or fail with timeout
+	if err != nil {
+		assert.Contains(t, err.Error(), "context")
+	}
+}
+
+func TestManager_Cleanup_ContextTimeout(t *testing.T) {
+	logger := zap.NewNop()
+
+	store, err := NewSQLiteStore(":memory:", logger)
+	require.NoError(t, err)
+	defer store.Close()
+
+	cfg := &config.SessionConfig{
+		IdleTimeout:      time.Millisecond,
+		MaxSessionsTotal: 10,
+		MaxSessionsUser:  3,
+	}
+
+	manager := NewManager(store, cfg, t.TempDir(), logger)
+	ctx := context.Background()
+
+	// Create a session
+	_, _, err = manager.GetOrCreate(ctx, "C123", "1234567890.123456", "U456")
+	require.NoError(t, err)
+
+	// Wait for idle timeout
+	time.Sleep(10 * time.Millisecond)
+
+	// Use context with very short timeout
+	ctxTimeout, cancel := context.WithTimeout(context.Background(), 1*time.Nanosecond)
+	defer cancel()
+
+	// Wait for timeout
+	time.Sleep(1 * time.Millisecond)
+
+	// Cleanup should handle timeout gracefully
+	err = manager.Cleanup(ctxTimeout)
+
+	// May succeed if operation is fast, or fail with timeout
+	_ = err
+}

@@ -147,13 +147,13 @@ func TestUnregisterV2(t *testing.T) {
 		registry.Unregister("non-existent-session", "observer-id")
 	})
 
-	t.Run("observer channels are closed on unregister", func(t *testing.T) {
+	t.Run("observer Done channel is closed on unregister", func(t *testing.T) {
 		observer := NewObserverV2(sessionID)
 		require.NoError(t, registry.Register(sessionID, observer))
 
 		registry.Unregister(sessionID, observer.ID)
 
-		// Verify channels are closed
+		// Verify Done channel is closed
 		select {
 		case <-observer.Done:
 			// Successfully closed
@@ -161,13 +161,8 @@ func TestUnregisterV2(t *testing.T) {
 			t.Fatal("Done channel should be closed")
 		}
 
-		// SendChan should be closed - attempting to receive should return immediately
-		select {
-		case _, ok := <-observer.SendChan:
-			assert.False(t, ok, "SendChan should be closed")
-		case <-time.After(100 * time.Millisecond):
-			t.Fatal("SendChan should be closed")
-		}
+		// Note: SendChan is intentionally NOT closed to avoid race conditions
+		// with concurrent broadcast operations
 	})
 }
 
@@ -386,7 +381,7 @@ func TestCloseV2(t *testing.T) {
 		assert.Equal(t, 0, registry.GetObserverCount(session1), "Session1 should have 0 observers")
 		assert.Equal(t, 0, registry.GetObserverCount(session2), "Session2 should have 0 observers")
 
-		// Verify all observer channels are closed
+		// Verify all observer Done channels are closed
 		observers := []*ObserverV2{obs1_1, obs1_2, obs2_1}
 		for i, obs := range observers {
 			select {
@@ -395,13 +390,7 @@ func TestCloseV2(t *testing.T) {
 			case <-time.After(100 * time.Millisecond):
 				t.Fatalf("Observer %d Done channel should be closed", i)
 			}
-
-			select {
-			case _, ok := <-obs.SendChan:
-				assert.False(t, ok, "Observer %d SendChan should be closed", i)
-			case <-time.After(100 * time.Millisecond):
-				t.Fatalf("Observer %d SendChan should be closed", i)
-			}
+			// Note: SendChan is intentionally NOT closed to avoid race conditions
 		}
 	})
 
@@ -505,7 +494,6 @@ func TestConcurrentAccessV2(t *testing.T) {
 	})
 
 	t.Run("concurrent reads and writes", func(t *testing.T) {
-		t.Skip("Flaky concurrent test - TODO: fix timing issues")
 		var wg sync.WaitGroup
 		sessionID := "read-write-session"
 

@@ -24,8 +24,8 @@ func NewParser() *Parser {
 		// OSC (Operating System Command) sequences: ESC]...BEL
 		oscRegex: regexp.MustCompile(`\x1b\][^\x07]*\x07`),
 
-		// Kiro prompt patterns
-		promptRegex: regexp.MustCompile(`(?m)^(>|\$|kiro>|claude>)\s*$`),
+		// Kiro prompt patterns (including assistant> which kiro-cli uses)
+		promptRegex: regexp.MustCompile(`(?m)^(>|\$|kiro>|claude>|assistant>)\s*$`),
 
 		// Spinner/progress characters that might appear
 		spinnerRegex: regexp.MustCompile(`^[|/\-\\⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]+\s*$`),

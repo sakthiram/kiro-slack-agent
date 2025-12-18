@@ -27,3 +27,7 @@ vendor/
 # Local config
 configs/local.yaml
 .env
+.env.e2e
+
+# E2E test artifacts
+internal/e2e/test-results/

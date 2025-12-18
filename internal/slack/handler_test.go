@@ -3,7 +3,6 @@ package slack
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/slack-go/slack/slackevents"
 	"github.com/slack-go/slack/socketmode"
@@ -27,6 +26,7 @@ func TestHandler_HandleAppMention(t *testing.T) {
 		},
 		logger: logger,
 	}
+	handler.SetSyncMode(true)
 
 	ev := &slackevents.AppMentionEvent{
 		Channel:         "C123",
@@ -38,9 +38,8 @@ func TestHandler_HandleAppMention(t *testing.T) {
 
 	handler.handleAppMention(ev)
 
-	// Handler is called asynchronously, so we verify setup is correct
-	assert.NotNil(t, handler.messageHandler)
-	_ = handlerCalled // Used in async callback
+	// With sync mode, handler is called synchronously
+	assert.True(t, handlerCalled)
 }
 
 func TestHandler_HandleMessage_IgnoresBot(t *testing.T) {
@@ -149,19 +148,20 @@ func TestNewHandler(t *testing.T) {
 func TestHandler_HandleMessage_ValidDM(t *testing.T) {
 	logger := zap.NewNop()
 
-	done := make(chan struct{})
+	handlerCalled := false
 	handler := &Handler{
 		client: &Client{botUserID: "UBOT123"},
 		messageHandler: func(ctx context.Context, msg *MessageEvent) error {
+			handlerCalled = true
 			assert.Equal(t, "D123", msg.ChannelID)
 			assert.Equal(t, "U456", msg.UserID)
 			assert.Equal(t, "hello", msg.Text)
 			assert.True(t, msg.IsDM)
-			close(done)
 			return nil
 		},
 		logger: logger,
 	}
+	handler.SetSyncMode(true)
 
 	ev := &slackevents.MessageEvent{
 		Channel:   "D123",
@@ -172,13 +172,8 @@ func TestHandler_HandleMessage_ValidDM(t *testing.T) {
 
 	handler.handleMessage(ev)
 
-	// Wait for async handler with timeout
-	select {
-	case <-done:
-		// Success
-	case <-time.After(100 * time.Millisecond):
-		// Async handler may not have completed yet, that's okay
-	}
+	// With sync mode, handler is called synchronously
+	assert.True(t, handlerCalled)
 }
 
 func TestHandler_HandleMessage_EmptyChannel(t *testing.T) {
@@ -208,13 +203,16 @@ func TestHandler_HandleMessage_EmptyChannel(t *testing.T) {
 func TestHandler_HandleCallbackEvent_AppMention(t *testing.T) {
 	logger := zap.NewNop()
 
+	handlerCalled := false
 	handler := &Handler{
 		client: &Client{botUserID: "UBOT123"},
 		messageHandler: func(ctx context.Context, msg *MessageEvent) error {
+			handlerCalled = true
 			return nil
 		},
 		logger: logger,
 	}
+	handler.SetSyncMode(true)
 
 	event := slackevents.EventsAPIEvent{
 		Type: slackevents.CallbackEvent,
@@ -231,18 +229,22 @@ func TestHandler_HandleCallbackEvent_AppMention(t *testing.T) {
 
 	// Should not panic
 	handler.handleCallbackEvent(event)
+	assert.True(t, handlerCalled)
 }
 
 func TestHandler_HandleCallbackEvent_Message(t *testing.T) {
 	logger := zap.NewNop()
 
+	handlerCalled := false
 	handler := &Handler{
 		client: &Client{botUserID: "UBOT123"},
 		messageHandler: func(ctx context.Context, msg *MessageEvent) error {
+			handlerCalled = true
 			return nil
 		},
 		logger: logger,
 	}
+	handler.SetSyncMode(true)
 
 	event := slackevents.EventsAPIEvent{
 		Type: slackevents.CallbackEvent,
@@ -259,6 +261,7 @@ func TestHandler_HandleCallbackEvent_Message(t *testing.T) {
 
 	// Should not panic
 	handler.handleCallbackEvent(event)
+	assert.True(t, handlerCalled)
 }
 
 func TestHandler_HandleCallbackEvent_UnknownType(t *testing.T) {
@@ -288,19 +291,20 @@ func TestHandler_HandleCallbackEvent_UnknownType(t *testing.T) {
 func TestHandler_HandleEvent_AppMention(t *testing.T) {
 	logger := zap.NewNop()
 
-	done := make(chan struct{})
+	handlerCalled := false
 	handler := &Handler{
 		client: &Client{botUserID: "UBOT123"},
 		messageHandler: func(ctx context.Context, msg *MessageEvent) error {
+			handlerCalled = true
 			assert.Equal(t, "C123", msg.ChannelID)
 			assert.Equal(t, "U456", msg.UserID)
 			assert.Equal(t, "hello", msg.Text) // Mention cleaned
 			assert.True(t, msg.IsMention)
-			close(done)
 			return nil
 		},
 		logger: logger,
 	}
+	handler.SetSyncMode(true)
 
 	evt := socketmode.Event{
 		Type: socketmode.EventTypeEventsAPI,
@@ -321,32 +325,26 @@ func TestHandler_HandleEvent_AppMention(t *testing.T) {
 
 	err := handler.HandleEvent(evt, nil)
 	assert.NoError(t, err)
-
-	// Wait for async handler with timeout
-	select {
-	case <-done:
-		// Success
-	case <-time.After(100 * time.Millisecond):
-		// Async handler may not have completed yet, that's okay
-	}
+	assert.True(t, handlerCalled)
 }
 
 func TestHandler_HandleEvent_DirectMessage(t *testing.T) {
 	logger := zap.NewNop()
 
-	done := make(chan struct{})
+	handlerCalled := false
 	handler := &Handler{
 		client: &Client{botUserID: "UBOT123"},
 		messageHandler: func(ctx context.Context, msg *MessageEvent) error {
+			handlerCalled = true
 			assert.Equal(t, "D123", msg.ChannelID)
 			assert.Equal(t, "U456", msg.UserID)
 			assert.Equal(t, "hello", msg.Text)
 			assert.True(t, msg.IsDM)
-			close(done)
 			return nil
 		},
 		logger: logger,
 	}
+	handler.SetSyncMode(true)
 
 	evt := socketmode.Event{
 		Type: socketmode.EventTypeEventsAPI,
@@ -366,14 +364,7 @@ func TestHandler_HandleEvent_DirectMessage(t *testing.T) {
 
 	err := handler.HandleEvent(evt, nil)
 	assert.NoError(t, err)
-
-	// Wait for async handler with timeout
-	select {
-	case <-done:
-		// Success
-	case <-time.After(100 * time.Millisecond):
-		// Async handler may not have completed yet, that's okay
-	}
+	assert.True(t, handlerCalled)
 }
 
 func TestHandler_HandleEvent_ConnectionEvents(t *testing.T) {
@@ -481,9 +472,6 @@ func TestHandler_HandleEvent_BotMessage_Ignored(t *testing.T) {
 
 	err := handler.HandleEvent(evt, nil)
 	assert.NoError(t, err)
-
-	// Give it a moment for any async processing
-	time.Sleep(10 * time.Millisecond)
 	assert.False(t, handlerCalled, "handler should not be called for bot messages")
 }
 
@@ -517,8 +505,84 @@ func TestHandler_HandleEvent_NonDM_Ignored(t *testing.T) {
 
 	err := handler.HandleEvent(evt, nil)
 	assert.NoError(t, err)
-
-	// Give it a moment for any async processing
-	time.Sleep(10 * time.Millisecond)
 	assert.False(t, handlerCalled, "handler should not be called for non-DM messages")
+}
+
+func TestHandler_SetSyncMode(t *testing.T) {
+	logger := zap.NewNop()
+
+	handler := &Handler{
+		client: &Client{botUserID: "UBOT123"},
+		messageHandler: func(ctx context.Context, msg *MessageEvent) error {
+			return nil
+		},
+		logger: logger,
+	}
+
+	// Test that sync mode is disabled by default
+	assert.False(t, handler.syncMode)
+
+	// Test enabling sync mode
+	handler.SetSyncMode(true)
+	assert.True(t, handler.syncMode)
+
+	// Test disabling sync mode
+	handler.SetSyncMode(false)
+	assert.False(t, handler.syncMode)
+}
+
+func TestHandler_SyncMode_AppMention(t *testing.T) {
+	logger := zap.NewNop()
+
+	handlerCalled := false
+	handler := &Handler{
+		client: &Client{botUserID: "UBOT123"},
+		messageHandler: func(ctx context.Context, msg *MessageEvent) error {
+			handlerCalled = true
+			assert.Equal(t, "C123", msg.ChannelID)
+			return nil
+		},
+		logger: logger,
+	}
+	handler.SetSyncMode(true)
+
+	ev := &slackevents.AppMentionEvent{
+		Channel:   "C123",
+		User:      "U456",
+		Text:      "<@UBOT123> hello",
+		TimeStamp: "1234567890.123456",
+	}
+
+	handler.handleAppMention(ev)
+
+	// With sync mode enabled, handler should be called immediately
+	assert.True(t, handlerCalled)
+}
+
+func TestHandler_SyncMode_DirectMessage(t *testing.T) {
+	logger := zap.NewNop()
+
+	handlerCalled := false
+	handler := &Handler{
+		client: &Client{botUserID: "UBOT123"},
+		messageHandler: func(ctx context.Context, msg *MessageEvent) error {
+			handlerCalled = true
+			assert.Equal(t, "D123", msg.ChannelID)
+			return nil
+		},
+		logger: logger,
+	}
+	handler.SetSyncMode(true)
+
+	ev := &slackevents.MessageEvent{
+		Channel:   "D123",
+		User:      "U456",
+		Text:      "hello",
+		TimeStamp: "1234567890.123456",
+	}
+
+	handler.handleMessage(ev)
+
+	// With sync mode enabled, handler should be called immediately
+	assert.True(t, handlerCalled)
 }

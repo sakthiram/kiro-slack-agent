@@ -136,3 +136,94 @@ func TestProcess_Start_AlreadyRunning(t *testing.T) {
 	err := process.Start(ctx)
 	assert.NoError(t, err)
 }
+
+func TestProcess_Start_ContextCancellation(t *testing.T) {
+	logger := zap.NewNop()
+	cfg := &config.KiroConfig{
+		BinaryPath:      "sleep",
+		StartupTimeout:  30 * time.Second,
+		ResponseTimeout: 30 * time.Second,
+	}
+
+	process := NewProcess("/tmp", cfg, logger)
+
+	// Create a context that's already cancelled
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	// Start should fail due to cancelled context
+	err := process.Start(ctx)
+	assert.Error(t, err)
+}
+
+func TestProcess_Start_ContextTimeout(t *testing.T) {
+	logger := zap.NewNop()
+	cfg := &config.KiroConfig{
+		BinaryPath:      "/nonexistent/binary",
+		StartupTimeout:  1 * time.Millisecond,
+		ResponseTimeout: 1 * time.Millisecond,
+	}
+
+	process := NewProcess("/tmp", cfg, logger)
+
+	// Create a context with very short timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Millisecond)
+	defer cancel()
+
+	// Start should fail due to timeout
+	err := process.Start(ctx)
+	assert.Error(t, err)
+}
+
+func TestProcess_SendMessage_ContextCancellation(t *testing.T) {
+	logger := zap.NewNop()
+	cfg := &config.KiroConfig{
+		BinaryPath:      "kiro-cli",
+		StartupTimeout:  30 * time.Second,
+		ResponseTimeout: 30 * time.Second,
+	}
+
+	process := NewProcess("/tmp/test-session", cfg, logger)
+
+	// Manually set process as running to bypass actual start
+	process.mu.Lock()
+	process.running = true
+	process.mu.Unlock()
+
+	// Create a cancelled context
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	// SendMessage should handle cancelled context gracefully
+	// Should not panic even with cancelled context
+	assert.NotPanics(t, func() {
+		process.SendMessage(ctx, "test", func(chunk string, isComplete bool) {})
+	})
+}
+
+func TestProcess_SendMessage_ContextTimeout(t *testing.T) {
+	logger := zap.NewNop()
+	cfg := &config.KiroConfig{
+		BinaryPath:      "kiro-cli",
+		StartupTimeout:  30 * time.Second,
+		ResponseTimeout: 1 * time.Millisecond, // Very short timeout
+	}
+
+	process := NewProcess("/tmp/test-session", cfg, logger)
+
+	// Manually set process as running
+	process.mu.Lock()
+	process.running = true
+	process.mu.Unlock()
+
+	ctx := context.Background()
+
+	// SendMessage should handle timeout gracefully
+	// Without a real PTY, it will fail to write but should not panic
+	err := process.SendMessage(ctx, "test message", func(chunk string, isComplete bool) {
+		// Handler may or may not be called depending on timing
+	})
+
+	// Will error because pty is nil, but should not panic
+	assert.Error(t, err)
+}

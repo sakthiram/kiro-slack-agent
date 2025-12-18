@@ -76,6 +76,11 @@ func TestParser_DetectCompletion(t *testing.T) {
 			want:  true,
 		},
 		{
+			name:  "ends with assistant>",
+			input: "some output\nassistant>",
+			want:  true,
+		},
+		{
 			name:  "no prompt",
 			input: "some output\nmore output",
 			want:  false,
