@@ -76,12 +76,25 @@ func main() {
 	// 8. Create web server (if enabled)
 	var webServer *web.Server
 	if cfg.Web.Enabled {
-		webServer = web.NewServer(&cfg.Web, observerRegistry, sessionMgr, logger)
+		var err error
+		webServer, err = web.NewServer(&cfg.Web, observerRegistry, sessionMgr, logger)
+		if err != nil {
+			logger.Fatal("failed to create web server", zap.Error(err))
+		}
 		ctx := context.Background()
 		if err := webServer.Start(ctx); err != nil {
 			logger.Error("failed to start web server", zap.Error(err))
 		} else {
-			logger.Info("web server started", zap.String("address", webServer.Addr()))
+			logger.Info("web server started",
+				zap.String("address", webServer.Addr()),
+				zap.Bool("auth_enabled", webServer.AuthEnabled()),
+			)
+			if webServer.AuthEnabled() {
+				logger.Info("web observer authentication enabled",
+					zap.String("token", webServer.AuthToken()),
+					zap.String("usage", "Pass token via 'Authorization: Bearer <token>' header or '?token=<token>' query param"),
+				)
+			}
 		}
 	}
 

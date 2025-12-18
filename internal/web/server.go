@@ -34,6 +34,7 @@ type Server struct {
 	logger    *zap.Logger
 	server    *http.Server
 	listener  net.Listener
+	auth      *AuthMiddleware
 	mu        sync.Mutex
 	started   bool
 }
@@ -44,37 +45,63 @@ func NewServer(
 	registry *ObserverRegistry,
 	sessions *session.Manager,
 	logger *zap.Logger,
-) *Server {
+) (*Server, error) {
+	// Create auth middleware
+	auth, err := NewAuthMiddleware(cfg.AuthToken, cfg.AuthEnabled, logger)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create auth middleware: %w", err)
+	}
+
 	s := &Server{
 		config:   cfg,
 		registry: registry,
 		sessions: sessions,
 		router:   http.NewServeMux(),
 		logger:   logger,
+		auth:     auth,
 	}
 
 	// Register routes
 	s.registerRoutes()
 
-	return s
+	return s, nil
+}
+
+// AuthToken returns the authentication token for the web server.
+// This is useful for logging at startup so users know the token.
+func (s *Server) AuthToken() string {
+	if s.auth != nil {
+		return s.auth.Token()
+	}
+	return ""
+}
+
+// AuthEnabled returns whether authentication is enabled.
+func (s *Server) AuthEnabled() bool {
+	if s.auth != nil {
+		return s.auth.Enabled()
+	}
+	return false
 }
 
 // registerRoutes sets up all HTTP endpoints.
 func (s *Server) registerRoutes() {
-	// Static file serving
+	// Static file serving (public - serves the login page)
 	if s.config.StaticPath != "" {
 		fs := http.FileServer(http.Dir(s.config.StaticPath))
 		s.router.Handle("/static/", http.StripPrefix("/static/", fs))
 		s.router.HandleFunc("/", s.handleIndex)
 	}
 
-	// REST API endpoints
+	// Health endpoint (public - for monitoring)
 	s.router.HandleFunc("/api/health", s.handleHealth)
-	s.router.HandleFunc("/api/sessions", s.handleListSessions)
-	s.router.HandleFunc("/api/sessions/", s.handleSessionDetails)
 
-	// WebSocket endpoint
-	s.router.HandleFunc("/ws/sessions/", s.handleWebSocket)
+	// Protected REST API endpoints
+	s.router.HandleFunc("/api/sessions", s.auth.Wrap(s.handleListSessions))
+	s.router.HandleFunc("/api/sessions/", s.auth.Wrap(s.handleSessionDetails))
+
+	// Protected WebSocket endpoint
+	s.router.HandleFunc("/ws/sessions/", s.auth.Wrap(s.handleWebSocket))
 }
 
 // Start begins the HTTP server.

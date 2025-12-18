@@ -138,6 +138,10 @@ web:
 
   # Maximum concurrent observers per session
   max_observers_per_session: 10
+
+  # Authentication (enabled by default)
+  auth_enabled: true
+  auth_token: ""  # Leave empty to auto-generate
 ```
 
 ### Environment Variables
@@ -146,6 +150,58 @@ Override config via environment variables:
 ```bash
 export KIRO_AGENT_WEB_ENABLED=true
 export KIRO_AGENT_WEB_LISTEN_ADDR=:8080
+export KIRO_AGENT_WEB_AUTH_ENABLED=true
+export KIRO_AGENT_WEB_AUTH_TOKEN=your-secret-token
+```
+
+## Authentication
+
+When `auth_enabled: true` (the default), all API and WebSocket endpoints require authentication.
+
+### Token Generation
+
+If `auth_token` is empty, a secure random token is auto-generated on startup and logged:
+
+```
+INFO web observer authentication enabled token=<64-char-hex-token>
+```
+
+### Authentication Methods
+
+**1. Authorization Header (Bearer Token)**
+```bash
+curl -H "Authorization: Bearer <token>" http://localhost:8080/api/sessions
+```
+
+**2. Query Parameter**
+```bash
+curl "http://localhost:8080/api/sessions?token=<token>"
+```
+
+**3. WebSocket Connection**
+```javascript
+// Via query parameter (recommended for browsers)
+const ws = new WebSocket('ws://localhost:8080/ws/sessions/{id}/stream?token=<token>');
+
+// Via Authorization header (from Node.js or other clients)
+const ws = new WebSocket('ws://localhost:8080/ws/sessions/{id}/stream', {
+  headers: { 'Authorization': 'Bearer <token>' }
+});
+```
+
+### Public Endpoints
+
+The following endpoints do NOT require authentication:
+- `GET /api/health` - Health check (for monitoring)
+- Static files (`/static/*`) - Web UI assets
+
+### Disabling Authentication
+
+For development or trusted networks, you can disable auth:
+
+```yaml
+web:
+  auth_enabled: false
 ```
 
 ## Development
@@ -223,11 +279,12 @@ Tested on:
 
 ## Security Notes
 
-⚠️ **Important Security Considerations:**
+**Security Considerations:**
 
-1. **No Authentication**: Current implementation has no auth
-   - Use firewall/VPN to restrict access
-   - Or add authentication middleware
+1. **Authentication**: Token-based auth is enabled by default
+   - All API and WebSocket endpoints require a valid token
+   - Token is auto-generated on startup if not configured
+   - Can be disabled for development with `auth_enabled: false`
 
 2. **Open CORS**: WebSocket accepts all origins
    - For development only
@@ -237,6 +294,10 @@ Tested on:
    - Use reverse proxy (nginx) for HTTPS
    - Or add TLS configuration to server
 
+4. **Token Storage**: The auth token is logged at startup
+   - Ensure logs are properly secured
+   - Consider using a configured token for production
+
 ## Future Enhancements
 
 Potential improvements:
@@ -245,8 +306,10 @@ Potential improvements:
 - Download terminal output as text
 - Session recording and playback
 - Multi-session grid view
-- Authentication and authorization
+- Role-based authorization (admin vs viewer)
 - Metrics and analytics dashboard
+- TLS/HTTPS support
+- Origin validation for WebSocket
 
 ## License
 

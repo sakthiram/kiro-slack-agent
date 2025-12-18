@@ -42,6 +42,8 @@ web:
   listen_addr: ":8080"             # HTTP server address
   static_path: "./web/static"      # Path to static web files
   max_observers_per_session: 10    # Max concurrent viewers per session
+  auth_enabled: true               # Require authentication for API/WebSocket (default: true)
+  auth_token: ""                   # Leave empty to auto-generate on startup
 
 logging:
   # Log level: debug, info, warn, error

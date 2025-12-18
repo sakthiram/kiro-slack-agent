@@ -49,10 +49,12 @@ type StreamingConfig struct {
 
 // WebConfig holds web interface configuration.
 type WebConfig struct {
-	Enabled              bool   `mapstructure:"enabled"`                 // default: false
-	ListenAddr           string `mapstructure:"listen_addr"`             // default: :8080
-	StaticPath           string `mapstructure:"static_path"`             // default: ./web/static
-	MaxObserversPerSession int  `mapstructure:"max_observers_per_session"` // default: 10
+	Enabled                bool   `mapstructure:"enabled"`                   // default: false
+	ListenAddr             string `mapstructure:"listen_addr"`               // default: :8080
+	StaticPath             string `mapstructure:"static_path"`               // default: ./web/static
+	MaxObserversPerSession int    `mapstructure:"max_observers_per_session"` // default: 10
+	AuthEnabled            bool   `mapstructure:"auth_enabled"`              // default: true (when web is enabled)
+	AuthToken              string `mapstructure:"auth_token"`                // auto-generated if empty
 }
 
 // LoggingConfig holds logging configuration.
@@ -128,6 +130,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("web.listen_addr", ":8080")
 	v.SetDefault("web.static_path", "./web/static")
 	v.SetDefault("web.max_observers_per_session", 10)
+	v.SetDefault("web.auth_enabled", true)
+	v.SetDefault("web.auth_token", "") // Will be auto-generated if empty and auth is enabled
 
 	// Logging defaults
 	v.SetDefault("logging.level", "info")

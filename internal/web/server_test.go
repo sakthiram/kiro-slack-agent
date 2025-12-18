@@ -23,16 +23,18 @@ import (
 func TestNewServer(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 	cfg := &config.WebConfig{
-		Enabled:              true,
-		ListenAddr:           ":8080",
-		StaticPath:           "./testdata/static",
+		Enabled:                true,
+		ListenAddr:             ":8080",
+		StaticPath:             "./testdata/static",
 		MaxObserversPerSession: 5,
+		AuthEnabled:            false, // Disable auth for basic test
 	}
 
 	registry := NewObserverRegistry(cfg.MaxObserversPerSession, logger)
 	sessions := createTestSessionManager(t)
 
-	server := NewServer(cfg, registry, sessions, logger)
+	server, err := NewServer(cfg, registry, sessions, logger)
+	require.NoError(t, err)
 
 	assert.NotNil(t, server)
 	assert.Equal(t, cfg, server.config)
@@ -40,25 +42,28 @@ func TestNewServer(t *testing.T) {
 	assert.Equal(t, sessions, server.sessions)
 	assert.NotNil(t, server.router)
 	assert.False(t, server.started)
+	assert.NotNil(t, server.auth)
 }
 
 func TestServerStartStop(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 	cfg := &config.WebConfig{
-		Enabled:              true,
-		ListenAddr:           "127.0.0.1:0", // Random port
-		StaticPath:           "./testdata/static",
+		Enabled:                true,
+		ListenAddr:             "127.0.0.1:0", // Random port
+		StaticPath:             "./testdata/static",
 		MaxObserversPerSession: 5,
+		AuthEnabled:            false,
 	}
 
 	registry := NewObserverRegistry(cfg.MaxObserversPerSession, logger)
 	sessions := createTestSessionManager(t)
-	server := NewServer(cfg, registry, sessions, logger)
+	server, err := NewServer(cfg, registry, sessions, logger)
+	require.NoError(t, err)
 
 	ctx := context.Background()
 
 	// Start server
-	err := server.Start(ctx)
+	err = server.Start(ctx)
 	require.NoError(t, err)
 	assert.True(t, server.started)
 	assert.NotEmpty(t, server.Addr())
@@ -81,15 +86,17 @@ func TestServerStartStop(t *testing.T) {
 func TestHandleHealth(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 	cfg := &config.WebConfig{
-		Enabled:              true,
-		ListenAddr:           ":8080",
-		StaticPath:           "./testdata/static",
+		Enabled:                true,
+		ListenAddr:             ":8080",
+		StaticPath:             "./testdata/static",
 		MaxObserversPerSession: 5,
+		AuthEnabled:            false,
 	}
 
 	registry := NewObserverRegistry(cfg.MaxObserversPerSession, logger)
 	sessions := createTestSessionManager(t)
-	server := NewServer(cfg, registry, sessions, logger)
+	server, err := NewServer(cfg, registry, sessions, logger)
+	require.NoError(t, err)
 
 	tests := []struct {
 		name           string
@@ -135,15 +142,17 @@ func TestHandleHealth(t *testing.T) {
 func TestHandleListSessions(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 	cfg := &config.WebConfig{
-		Enabled:              true,
-		ListenAddr:           ":8080",
-		StaticPath:           "./testdata/static",
+		Enabled:                true,
+		ListenAddr:             ":8080",
+		StaticPath:             "./testdata/static",
 		MaxObserversPerSession: 5,
+		AuthEnabled:            false,
 	}
 
 	registry := NewObserverRegistry(cfg.MaxObserversPerSession, logger)
 	sessions := createTestSessionManager(t)
-	server := NewServer(cfg, registry, sessions, logger)
+	server, err := NewServer(cfg, registry, sessions, logger)
+	require.NoError(t, err)
 
 	ctx := context.Background()
 
@@ -201,15 +210,17 @@ func TestHandleListSessions(t *testing.T) {
 func TestHandleSessionDetails(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 	cfg := &config.WebConfig{
-		Enabled:              true,
-		ListenAddr:           ":8080",
-		StaticPath:           "./testdata/static",
+		Enabled:                true,
+		ListenAddr:             ":8080",
+		StaticPath:             "./testdata/static",
 		MaxObserversPerSession: 5,
+		AuthEnabled:            false,
 	}
 
 	registry := NewObserverRegistry(cfg.MaxObserversPerSession, logger)
 	sessions := createTestSessionManager(t)
-	server := NewServer(cfg, registry, sessions, logger)
+	server, err := NewServer(cfg, registry, sessions, logger)
+	require.NoError(t, err)
 
 	ctx := context.Background()
 
@@ -280,20 +291,22 @@ func TestHandleSessionDetails(t *testing.T) {
 func TestHandleWebSocket(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 	cfg := &config.WebConfig{
-		Enabled:              true,
-		ListenAddr:           "127.0.0.1:0",
-		StaticPath:           "./testdata/static",
+		Enabled:                true,
+		ListenAddr:             "127.0.0.1:0",
+		StaticPath:             "./testdata/static",
 		MaxObserversPerSession: 2,
+		AuthEnabled:            false,
 	}
 
 	registry := NewObserverRegistry(cfg.MaxObserversPerSession, logger)
 	sessions := createTestSessionManager(t)
-	server := NewServer(cfg, registry, sessions, logger)
+	server, err := NewServer(cfg, registry, sessions, logger)
+	require.NoError(t, err)
 
 	ctx := context.Background()
 
 	// Start server
-	err := server.Start(ctx)
+	err = server.Start(ctx)
 	require.NoError(t, err)
 	defer server.Stop(ctx)
 
@@ -362,15 +375,17 @@ func TestHandleIndex(t *testing.T) {
 	require.NoError(t, err)
 
 	cfg := &config.WebConfig{
-		Enabled:              true,
-		ListenAddr:           ":8080",
-		StaticPath:           tmpDir,
+		Enabled:                true,
+		ListenAddr:             ":8080",
+		StaticPath:             tmpDir,
 		MaxObserversPerSession: 5,
+		AuthEnabled:            false,
 	}
 
 	registry := NewObserverRegistry(cfg.MaxObserversPerSession, logger)
 	sessions := createTestSessionManager(t)
-	server := NewServer(cfg, registry, sessions, logger)
+	server, err := NewServer(cfg, registry, sessions, logger)
+	require.NoError(t, err)
 
 	tests := []struct {
 		name           string
@@ -419,15 +434,17 @@ func TestStaticFileServing(t *testing.T) {
 	require.NoError(t, err)
 
 	cfg := &config.WebConfig{
-		Enabled:              true,
-		ListenAddr:           "127.0.0.1:0",
-		StaticPath:           tmpDir,
+		Enabled:                true,
+		ListenAddr:             "127.0.0.1:0",
+		StaticPath:             tmpDir,
 		MaxObserversPerSession: 5,
+		AuthEnabled:            false,
 	}
 
 	registry := NewObserverRegistry(cfg.MaxObserversPerSession, logger)
 	sessions := createTestSessionManager(t)
-	server := NewServer(cfg, registry, sessions, logger)
+	server, err := NewServer(cfg, registry, sessions, logger)
+	require.NoError(t, err)
 
 	ctx := context.Background()
 	err = server.Start(ctx)
