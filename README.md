@@ -22,10 +22,108 @@ Amelia Slack Agent provides a seamless interface between Slack and the Kiro CLI,
 
 - **Go 1.22+**: Required for building and running the agent
 - **kiro-cli**: The Kiro CLI must be installed and accessible in your PATH (or specify the binary path in config)
-- **Slack App**: A Slack app configured with Socket Mode and appropriate permissions
-  - Bot Token Scopes: `app_mentions:read`, `chat:write`, `im:history`, `im:read`, `im:write`
-  - Socket Mode enabled with Event Subscriptions
-  - Events: `app_mention`, `message.im`
+- **Slack App**: A Slack app configured with Socket Mode and appropriate permissions (see [Slack App Configuration](#slack-app-configuration) below)
+
+## Slack App Configuration
+
+This section documents the required Slack App permissions and security considerations.
+
+### Required OAuth Scopes
+
+The bot requires these **Bot Token Scopes** (OAuth & Permissions):
+
+**For Public Channels:**
+
+| Scope | Purpose |
+|-------|---------|
+| `channels:history` | Read message history in public channels where the bot is invited |
+| `channels:read` | View basic channel info and list public channels |
+| `chat:write` | Send messages as the bot in channels |
+| `app_mentions:read` | Receive events when users @mention the bot |
+
+**For Private Channels:**
+
+| Scope | Purpose |
+|-------|---------|
+| `groups:history` | Read message history in private channels where the bot is invited |
+| `groups:read` | View basic private channel info |
+| `chat:write` | Send messages as the bot in channels |
+| `app_mentions:read` | Receive events when users @mention the bot |
+
+### Optional OAuth Scopes
+
+These scopes enable additional features but are **not required** for basic channel operation:
+
+| Scope | Purpose | When Needed |
+|-------|---------|-------------|
+| `im:history` | Read DM history with the bot | For DM support |
+| `im:read` | View basic DM info | For DM support |
+| `im:write` | Send DMs to users | For DM support |
+| `mpim:history` | Read multi-party DM history | For group DM support |
+
+### Event Subscriptions
+
+Enable **Socket Mode** and subscribe to these events:
+
+| Event | Purpose |
+|-------|---------|
+| `app_mention` | Triggers when users @mention the bot in channels |
+| `message.channels` | Triggers on messages in public channels (for thread replies) |
+| `message.groups` | Triggers on messages in private channels (for thread replies) |
+| `message.im` | Triggers on direct messages to the bot (optional, for DM support) |
+
+### Security Considerations
+
+**Channel-Only Mode (Recommended)**
+
+By default, we recommend configuring the bot for **channel-only operation** without DM write capabilities. This provides several security benefits:
+
+1. **Audit Trail**: All bot interactions happen in public/shared channels where they can be monitored
+2. **Access Control**: Admins can control which channels the bot joins
+3. **Transparency**: Team members can see what the bot is being asked to do
+4. **Reduced Attack Surface**: The bot cannot be used to send unsolicited DMs
+
+To configure channel-only mode, only grant these scopes:
+
+**For public channels:**
+- `channels:history`
+- `channels:read`
+- `chat:write`
+- `app_mentions:read`
+
+**For private channels (add these instead/additionally):**
+- `groups:history`
+- `groups:read`
+
+And only subscribe to these events:
+- `app_mention`
+- `message.channels` (for public channels)
+- `message.groups` (for private channels)
+
+**Enabling DM Support**
+
+If your use case requires DM support (private conversations with the bot), add these additional scopes:
+- `im:history`
+- `im:read`
+- `im:write`
+
+And subscribe to:
+- `message.im`
+
+Note: Enabling DM support means the bot can have private conversations that are not visible to workspace admins in channels.
+
+### Setup Steps
+
+1. **Create a Slack App** at https://api.slack.com/apps
+2. **Enable Socket Mode** under "Socket Mode" in the sidebar
+3. **Generate an App-Level Token** with `connections:write` scope
+4. **Add Bot Token Scopes** under "OAuth & Permissions"
+5. **Subscribe to Events** under "Event Subscriptions"
+6. **Install the App** to your workspace
+7. **Copy tokens** to your config:
+   - Bot User OAuth Token (`xoxb-...`) → `slack.bot_token`
+   - App-Level Token (`xapp-...`) → `slack.app_token`
+8. **Invite the bot** to channels where you want it to respond (`/invite @YourBotName`)
 
 ## Quick Start
 
