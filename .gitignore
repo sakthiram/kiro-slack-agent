@@ -32,3 +32,4 @@ configs/local.yaml
 
 # E2E test artifacts
 internal/e2e/test-results/
+kiro-slack-agent
