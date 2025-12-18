@@ -25,6 +25,7 @@ vendor/
 .DS_Store
 
 # Local config
+configs/config.yaml
 configs/local.yaml
 .env
 .env.e2e
