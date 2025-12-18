@@ -27,11 +27,11 @@ func TestDefaultBridgeFactory_CreateBridge(t *testing.T) {
 	assert.NoError(t, err)
 	assert.NotNil(t, bridge)
 
-	// Verify the bridge is an ObservableProcess
+	// Verify the bridge is a Process
 	assert.NotNil(t, bridge)
 
-	// Verify observer count is 0 initially
-	assert.Equal(t, 0, bridge.ObserverCount())
+	// Verify bridge is not running initially
+	assert.False(t, bridge.IsRunning())
 }
 
 // TestBridgeFactory_Interface verifies that DefaultBridgeFactory implements BridgeFactory.

@@ -6,9 +6,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/sakthiram/kiro-slack-agent/internal/beads"
 	"github.com/sakthiram/kiro-slack-agent/internal/config"
-	"github.com/sakthiram/kiro-slack-agent/internal/kiro"
-	"github.com/sakthiram/kiro-slack-agent/internal/session"
 	"github.com/sakthiram/kiro-slack-agent/internal/slack"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -95,136 +94,128 @@ func (m *mockSlackClient) getUpdateCalls() []updateCall {
 	return append([]updateCall{}, m.updateCalls...)
 }
 
-// mockSessionManager implements SessionManager for testing.
-type mockSessionManager struct {
-	mu               sync.Mutex
-	sessions         map[string]*session.Session
-	getOrCreateError error
-	updateStatusErr  error
-	statusUpdates    []statusUpdate
-	isNewSession     bool
+// mockBeadsManager implements BeadsManager for testing.
+type mockBeadsManager struct {
+	mu                  sync.Mutex
+	userDirs            map[string]string
+	issues              map[string]*beads.Issue
+	comments            map[string][]string
+	ensureUserDirError  error
+	findIssueError      error
+	createIssueError    error
+	updateIssueError    error
+	getContextError     error
+	contextMessages     []beads.Message
 }
 
-type statusUpdate struct {
-	id     session.SessionID
-	status session.SessionStatus
-}
-
-func newMockSessionManager() *mockSessionManager {
-	return &mockSessionManager{
-		sessions:     make(map[string]*session.Session),
-		isNewSession: true,
+func newMockBeadsManager() *mockBeadsManager {
+	return &mockBeadsManager{
+		userDirs: make(map[string]string),
+		issues:   make(map[string]*beads.Issue),
+		comments: make(map[string][]string),
 	}
 }
 
-func (m *mockSessionManager) GetOrCreate(ctx context.Context, channelID, threadTS, userID string) (*session.Session, bool, error) {
+func (m *mockBeadsManager) EnsureUserDir(ctx context.Context, userID string) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if m.getOrCreateError != nil {
-		return nil, false, m.getOrCreateError
+	if m.ensureUserDirError != nil {
+		return "", m.ensureUserDirError
 	}
 
-	key := channelID + ":" + threadTS
-	if sess, ok := m.sessions[key]; ok {
-		return sess, false, nil
-	}
-
-	sess := &session.Session{
-		ID:              session.SessionID("sess-" + channelID + "-" + threadTS),
-		ChannelID:       channelID,
-		ThreadTS:        threadTS,
-		UserID:          userID,
-		Status:          session.SessionStatusActive,
-		KiroSessionDir:  "/tmp/test-kiro-session",
-	}
-	m.sessions[key] = sess
-	return sess, m.isNewSession, nil
+	dir := "/tmp/test-sessions/" + userID
+	m.userDirs[userID] = dir
+	return dir, nil
 }
 
-func (m *mockSessionManager) UpdateStatus(ctx context.Context, id session.SessionID, status session.SessionStatus) error {
+func (m *mockBeadsManager) GetUserDir(userID string) string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return "/tmp/test-sessions/" + userID
+}
+
+func (m *mockBeadsManager) FindThreadIssue(ctx context.Context, userID string, thread *beads.ThreadInfo) (*beads.Issue, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if m.updateStatusErr != nil {
-		return m.updateStatusErr
+	if m.findIssueError != nil {
+		return nil, m.findIssueError
 	}
 
-	m.statusUpdates = append(m.statusUpdates, statusUpdate{id: id, status: status})
+	key := userID + ":" + thread.ThreadTS
+	if issue, ok := m.issues[key]; ok {
+		return issue, nil
+	}
+	return nil, nil
+}
+
+func (m *mockBeadsManager) CreateThreadIssue(ctx context.Context, userID string, thread *beads.ThreadInfo, message string) (*beads.Issue, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.createIssueError != nil {
+		return nil, m.createIssueError
+	}
+
+	key := userID + ":" + thread.ThreadTS
+	issue := &beads.Issue{
+		ID:          "issue-" + thread.ThreadTS,
+		Title:       message,
+		Description: message,
+		Labels:      thread.Labels(),
+	}
+	m.issues[key] = issue
+	return issue, nil
+}
+
+func (m *mockBeadsManager) UpdateThreadIssue(ctx context.Context, userID, issueID, role, message string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.updateIssueError != nil {
+		return m.updateIssueError
+	}
+
+	key := userID + ":" + issueID
+	m.comments[key] = append(m.comments[key], "["+role+"] "+message)
 	return nil
 }
 
-func (m *mockSessionManager) getStatusUpdates() []statusUpdate {
+func (m *mockBeadsManager) GetConversationContext(ctx context.Context, userID, issueID string) ([]beads.Message, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return append([]statusUpdate{}, m.statusUpdates...)
-}
 
-// mockBridgeCache implements BridgeCache for testing.
-type mockBridgeCache struct {
-	mu      sync.Mutex
-	bridges map[session.SessionID]*kiro.ObservableProcess
-	deleted []session.SessionID
-}
-
-func newMockBridgeCache() *mockBridgeCache {
-	return &mockBridgeCache{
-		bridges: make(map[session.SessionID]*kiro.ObservableProcess),
+	if m.getContextError != nil {
+		return nil, m.getContextError
 	}
-}
 
-func (m *mockBridgeCache) Get(id session.SessionID) (*kiro.ObservableProcess, bool) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	bridge, ok := m.bridges[id]
-	return bridge, ok
-}
-
-func (m *mockBridgeCache) Set(id session.SessionID, bridge *kiro.ObservableProcess) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.bridges[id] = bridge
-}
-
-func (m *mockBridgeCache) Delete(id session.SessionID) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	delete(m.bridges, id)
-	m.deleted = append(m.deleted, id)
-}
-
-func (m *mockBridgeCache) getDeleted() []session.SessionID {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return append([]session.SessionID{}, m.deleted...)
+	return m.contextMessages, nil
 }
 
 func TestNewMessageProcessor(t *testing.T) {
 	client := newMockSlackClient()
-	sessions := newMockSessionManager()
-	bridges := newMockBridgeCache()
+	beadsMgr := newMockBeadsManager()
 	cfg := &config.Config{}
 	logger := zap.NewNop()
 
-	processor := NewMessageProcessor(client, sessions, bridges, cfg, logger)
+	processor := NewMessageProcessor(client, beadsMgr, cfg, logger)
 
 	assert.NotNil(t, processor)
 	assert.NotNil(t, processor.slackClient)
-	assert.NotNil(t, processor.sessionMgr)
-	assert.NotNil(t, processor.bridges)
+	assert.NotNil(t, processor.beadsMgr)
 	assert.NotNil(t, processor.cfg)
 	assert.NotNil(t, processor.logger)
 }
 
-func TestMessageProcessor_ProcessMessage_SessionCreationError(t *testing.T) {
+func TestMessageProcessor_ProcessMessage_UserDirError(t *testing.T) {
 	client := newMockSlackClient()
-	sessions := newMockSessionManager()
-	sessions.getOrCreateError = errors.New("database error")
-	bridges := newMockBridgeCache()
+	beadsMgr := newMockBeadsManager()
+	beadsMgr.ensureUserDirError = errors.New("failed to init beads")
 	cfg := &config.Config{}
 	logger := zap.NewNop()
 
-	processor := NewMessageProcessor(client, sessions, bridges, cfg, logger)
+	processor := NewMessageProcessor(client, beadsMgr, cfg, logger)
 
 	msg := &slack.MessageEvent{
 		ChannelID: "C123",
@@ -236,22 +227,21 @@ func TestMessageProcessor_ProcessMessage_SessionCreationError(t *testing.T) {
 
 	err := processor.ProcessMessage(context.Background(), msg)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "database error")
+	assert.Contains(t, err.Error(), "failed to init beads")
 
 	// Verify error message was posted to user
 	calls := client.getPostCalls()
 	assert.NotEmpty(t, calls)
-	assert.Contains(t, calls[0].text, "Unable to create session")
+	assert.Contains(t, calls[0].text, "Unable to initialize user session")
 }
 
 func TestMessageProcessor_ProcessMessage_UsesMessageTSWhenNoThread(t *testing.T) {
 	client := newMockSlackClient()
-	sessions := newMockSessionManager()
-	bridges := newMockBridgeCache()
+	beadsMgr := newMockBeadsManager()
 	cfg := &config.Config{}
 	logger := zap.NewNop()
 
-	processor := NewMessageProcessor(client, sessions, bridges, cfg, logger)
+	processor := NewMessageProcessor(client, beadsMgr, cfg, logger)
 
 	// Message with no thread (empty ThreadTS)
 	msg := &slack.MessageEvent{
@@ -263,22 +253,25 @@ func TestMessageProcessor_ProcessMessage_UsesMessageTSWhenNoThread(t *testing.T)
 	}
 
 	// This will fail at Kiro bridge start (which is expected)
-	// We're testing that the session was created with MessageTS
+	// We're testing that the issue is created with MessageTS as thread
 	_ = processor.ProcessMessage(context.Background(), msg)
 
-	// Verify session was created using MessageTS as threadTS
-	sess, _, _ := sessions.GetOrCreate(context.Background(), "C123", "ts.124", "U456")
-	assert.Equal(t, "ts.124", sess.ThreadTS)
+	// Verify issue was created with MessageTS as threadTS
+	issue, _ := beadsMgr.FindThreadIssue(context.Background(), "U456", &beads.ThreadInfo{
+		ChannelID: "C123",
+		ThreadTS:  "ts.124",
+		UserID:    "U456",
+	})
+	assert.NotNil(t, issue)
 }
 
-func TestMessageProcessor_ProcessMessage_SessionStatusUpdates(t *testing.T) {
+func TestMessageProcessor_ProcessMessage_CreatesIssueForNewThread(t *testing.T) {
 	client := newMockSlackClient()
-	sessions := newMockSessionManager()
-	bridges := newMockBridgeCache()
+	beadsMgr := newMockBeadsManager()
 	cfg := &config.Config{}
 	logger := zap.NewNop()
 
-	processor := NewMessageProcessor(client, sessions, bridges, cfg, logger)
+	processor := NewMessageProcessor(client, beadsMgr, cfg, logger)
 
 	msg := &slack.MessageEvent{
 		ChannelID: "C123",
@@ -288,79 +281,89 @@ func TestMessageProcessor_ProcessMessage_SessionStatusUpdates(t *testing.T) {
 		MessageTS: "ts.124",
 	}
 
-	// This will fail at Kiro bridge start, but we still test status updates
+	// Call ProcessMessage - it will fail at Kiro start, but issue should be created
 	_ = processor.ProcessMessage(context.Background(), msg)
 
-	// Verify status was updated to processing and then back to active (via defer)
-	updates := sessions.getStatusUpdates()
-	assert.GreaterOrEqual(t, len(updates), 1)
-	// First update should be to Processing
-	assert.Equal(t, session.SessionStatusProcessing, updates[0].status)
+	// Verify an issue was created
+	issue, _ := beadsMgr.FindThreadIssue(context.Background(), "U456", &beads.ThreadInfo{
+		ChannelID: "C123",
+		ThreadTS:  "ts.123",
+		UserID:    "U456",
+	})
+	assert.NotNil(t, issue)
+	assert.Equal(t, "Hello", issue.Title)
+}
+
+func TestMessageProcessor_ProcessMessage_UpdatesExistingIssue(t *testing.T) {
+	client := newMockSlackClient()
+	beadsMgr := newMockBeadsManager()
+	cfg := &config.Config{}
+	logger := zap.NewNop()
+
+	// Pre-create an issue
+	thread := &beads.ThreadInfo{
+		ChannelID: "C123",
+		ThreadTS:  "ts.123",
+		UserID:    "U456",
+	}
+	_, _ = beadsMgr.CreateThreadIssue(context.Background(), "U456", thread, "First message")
+
+	processor := NewMessageProcessor(client, beadsMgr, cfg, logger)
+
+	msg := &slack.MessageEvent{
+		ChannelID: "C123",
+		ThreadTS:  "ts.123",
+		UserID:    "U456",
+		Text:      "Second message",
+		MessageTS: "ts.125",
+	}
+
+	// Process second message to existing thread
+	_ = processor.ProcessMessage(context.Background(), msg)
+
+	// Verify issue was updated with new comment
+	comments := beadsMgr.comments["U456:issue-ts.123"]
+	assert.Contains(t, comments, "[user] Second message")
 }
 
 func TestMessageProcessor_Interfaces_Satisfied(t *testing.T) {
 	// Test that the interfaces are properly satisfied
 	var _ slack.ClientInterface = (*mockSlackClient)(nil)
-	var _ SessionManager = (*mockSessionManager)(nil)
-	var _ BridgeCache = (*mockBridgeCache)(nil)
+	var _ BeadsManager = (*mockBeadsManager)(nil)
 }
 
-func TestMessageProcessor_NewSessionCreated(t *testing.T) {
-	client := newMockSlackClient()
-	sessions := newMockSessionManager()
-	sessions.isNewSession = true
-	bridges := newMockBridgeCache()
-	cfg := &config.Config{}
-	logger := zap.NewNop()
+func TestBuildContextualPrompt_EmptyMessages(t *testing.T) {
+	result := buildContextualPrompt(nil, "Current message")
+	assert.Equal(t, "Current message", result)
 
-	processor := NewMessageProcessor(client, sessions, bridges, cfg, logger)
-
-	msg := &slack.MessageEvent{
-		ChannelID: "C123",
-		ThreadTS:  "ts.123",
-		UserID:    "U456",
-		Text:      "Hello",
-		MessageTS: "ts.124",
-	}
-
-	// Call ProcessMessage - it will fail at Kiro start, but session should be created
-	_ = processor.ProcessMessage(context.Background(), msg)
-
-	// Verify a session was created
-	sess, isNew, err := sessions.GetOrCreate(context.Background(), "C123", "ts.123", "U456")
-	require.NoError(t, err)
-	assert.NotNil(t, sess)
-	// Second call returns existing session (isNew = false)
-	assert.False(t, isNew)
+	result = buildContextualPrompt([]beads.Message{}, "Current message")
+	assert.Equal(t, "Current message", result)
 }
 
-func TestMessageProcessor_ExistingSession(t *testing.T) {
-	client := newMockSlackClient()
-	sessions := newMockSessionManager()
-	bridges := newMockBridgeCache()
-	cfg := &config.Config{}
-	logger := zap.NewNop()
-
-	// Pre-create a session
-	_, _, _ = sessions.GetOrCreate(context.Background(), "C123", "ts.123", "U456")
-	sessions.isNewSession = false
-
-	processor := NewMessageProcessor(client, sessions, bridges, cfg, logger)
-
-	msg := &slack.MessageEvent{
-		ChannelID: "C123",
-		ThreadTS:  "ts.123",
-		UserID:    "U456",
-		Text:      "Hello again",
-		MessageTS: "ts.125",
+func TestBuildContextualPrompt_WithHistory(t *testing.T) {
+	messages := []beads.Message{
+		{Role: "user", Content: "Hello"},
+		{Role: "assistant", Content: "Hi there!"},
 	}
 
-	// Process second message to existing session
-	_ = processor.ProcessMessage(context.Background(), msg)
+	result := buildContextualPrompt(messages, "How are you?")
 
-	// Verify session was reused (not recreated)
-	sess, isNew, err := sessions.GetOrCreate(context.Background(), "C123", "ts.123", "U456")
-	require.NoError(t, err)
-	assert.NotNil(t, sess)
-	assert.False(t, isNew)
+	assert.Contains(t, result, "Previous conversation context:")
+	assert.Contains(t, result, "User: Hello")
+	assert.Contains(t, result, "Assistant: Hi there!")
+	assert.Contains(t, result, "Current message:")
+	assert.Contains(t, result, "How are you?")
+}
+
+func TestBuildContextualPrompt_TruncatesLongMessages(t *testing.T) {
+	longMessage := string(make([]byte, 600)) // 600 chars
+	messages := []beads.Message{
+		{Role: "user", Content: longMessage},
+	}
+
+	result := buildContextualPrompt(messages, "Current")
+
+	// Should be truncated to 500 chars + "..."
+	assert.Contains(t, result, "...")
+	assert.Less(t, len(result), len(longMessage)+100)
 }

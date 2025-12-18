@@ -8,12 +8,12 @@ import (
 // BridgeFactory creates bridge instances for communicating with Kiro.
 // This abstraction allows tests to inject mock bridges.
 type BridgeFactory interface {
-	// CreateBridge creates a new ObservableProcess instance.
+	// CreateBridge creates a new Process instance.
 	// The caller is responsible for wrapping it with RetryBridge if needed.
-	CreateBridge(sessionDir string, cfg *config.KiroConfig, logger *zap.Logger) (*ObservableProcess, error)
+	CreateBridge(sessionDir string, cfg *config.KiroConfig, logger *zap.Logger) (*Process, error)
 }
 
-// DefaultBridgeFactory creates real ObservableProcess instances.
+// DefaultBridgeFactory creates real Process instances.
 type DefaultBridgeFactory struct{}
 
 // NewDefaultBridgeFactory creates a new default bridge factory.
@@ -21,11 +21,10 @@ func NewDefaultBridgeFactory() *DefaultBridgeFactory {
 	return &DefaultBridgeFactory{}
 }
 
-// CreateBridge creates a new ObservableProcess instance.
-func (f *DefaultBridgeFactory) CreateBridge(sessionDir string, cfg *config.KiroConfig, logger *zap.Logger) (*ObservableProcess, error) {
-	// Create ObservableProcess which wraps Process and enables broadcasting
-	observable := NewObservableProcess(sessionDir, cfg, logger)
-	return observable, nil
+// CreateBridge creates a new Process instance.
+func (f *DefaultBridgeFactory) CreateBridge(sessionDir string, cfg *config.KiroConfig, logger *zap.Logger) (*Process, error) {
+	process := NewProcess(sessionDir, cfg, logger)
+	return process, nil
 }
 
 // Ensure DefaultBridgeFactory implements BridgeFactory.

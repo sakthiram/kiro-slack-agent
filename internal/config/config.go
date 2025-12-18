@@ -12,9 +12,8 @@ import (
 type Config struct {
 	Slack     SlackConfig     `mapstructure:"slack"`
 	Kiro      KiroConfig      `mapstructure:"kiro"`
-	Session   SessionConfig   `mapstructure:"session"`
+	Beads     BeadsConfig     `mapstructure:"beads"`
 	Streaming StreamingConfig `mapstructure:"streaming"`
-	Web       WebConfig       `mapstructure:"web"`
 	Logging   LoggingConfig   `mapstructure:"logging"`
 }
 
@@ -34,27 +33,16 @@ type KiroConfig struct {
 	MaxRetries      int           `mapstructure:"max_retries"`      // default: 1
 }
 
-// SessionConfig holds session management configuration.
-type SessionConfig struct {
-	IdleTimeout      time.Duration `mapstructure:"idle_timeout"`       // default: 30m
-	MaxSessionsTotal int           `mapstructure:"max_sessions_total"` // default: 100
-	MaxSessionsUser  int           `mapstructure:"max_sessions_user"`  // default: 5
-	DatabasePath     string        `mapstructure:"database_path"`      // default: /tmp/kiro-agent/sessions.db
+// BeadsConfig holds beads issue tracking configuration.
+type BeadsConfig struct {
+	SessionsBasePath   string `mapstructure:"sessions_base_path"`   // default: /var/kiro-agent/sessions
+	IssuePrefix        string `mapstructure:"issue_prefix"`         // default: slack
+	ContextMaxMessages int    `mapstructure:"context_max_messages"` // default: 20
 }
 
 // StreamingConfig holds streaming output configuration.
 type StreamingConfig struct {
 	UpdateInterval time.Duration `mapstructure:"update_interval"` // default: 500ms
-}
-
-// WebConfig holds web interface configuration.
-type WebConfig struct {
-	Enabled                bool   `mapstructure:"enabled"`                   // default: false
-	ListenAddr             string `mapstructure:"listen_addr"`               // default: :8080
-	StaticPath             string `mapstructure:"static_path"`               // default: ./web/static
-	MaxObserversPerSession int    `mapstructure:"max_observers_per_session"` // default: 10
-	AuthEnabled            bool   `mapstructure:"auth_enabled"`              // default: true (when web is enabled)
-	AuthToken              string `mapstructure:"auth_token"`                // auto-generated if empty
 }
 
 // LoggingConfig holds logging configuration.
@@ -116,22 +104,13 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("kiro.response_timeout", 120*time.Second)
 	v.SetDefault("kiro.max_retries", 1)
 
-	// Session defaults
-	v.SetDefault("session.idle_timeout", 30*time.Minute)
-	v.SetDefault("session.max_sessions_total", 100)
-	v.SetDefault("session.max_sessions_user", 5)
-	v.SetDefault("session.database_path", "/tmp/kiro-agent/sessions.db")
+	// Beads defaults
+	v.SetDefault("beads.sessions_base_path", "/var/kiro-agent/sessions")
+	v.SetDefault("beads.issue_prefix", "slack")
+	v.SetDefault("beads.context_max_messages", 20)
 
 	// Streaming defaults
 	v.SetDefault("streaming.update_interval", 500*time.Millisecond)
-
-	// Web defaults
-	v.SetDefault("web.enabled", false)
-	v.SetDefault("web.listen_addr", ":8080")
-	v.SetDefault("web.static_path", "./web/static")
-	v.SetDefault("web.max_observers_per_session", 10)
-	v.SetDefault("web.auth_enabled", true)
-	v.SetDefault("web.auth_token", "") // Will be auto-generated if empty and auth is enabled
 
 	// Logging defaults
 	v.SetDefault("logging.level", "info")

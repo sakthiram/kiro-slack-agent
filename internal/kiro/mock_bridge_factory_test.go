@@ -10,26 +10,26 @@ import (
 // MockBridgeFactory is a mock implementation of BridgeFactory for testing.
 // It allows tests to inject custom bridge behavior without starting real Kiro processes.
 type MockBridgeFactory struct {
-	CreateBridgeFunc func(sessionDir string, cfg *config.KiroConfig, logger *zap.Logger) (*ObservableProcess, error)
+	CreateBridgeFunc func(sessionDir string, cfg *config.KiroConfig, logger *zap.Logger) (*Process, error)
 }
 
-// CreateBridge calls the mock function if set, otherwise returns a default ObservableProcess.
-func (m *MockBridgeFactory) CreateBridge(sessionDir string, cfg *config.KiroConfig, logger *zap.Logger) (*ObservableProcess, error) {
+// CreateBridge calls the mock function if set, otherwise returns a default Process.
+func (m *MockBridgeFactory) CreateBridge(sessionDir string, cfg *config.KiroConfig, logger *zap.Logger) (*Process, error) {
 	if m.CreateBridgeFunc != nil {
 		return m.CreateBridgeFunc(sessionDir, cfg, logger)
 	}
 
-	// By default, create a real ObservableProcess
+	// By default, create a real Process
 	// Tests can provide their own CreateBridgeFunc to customize behavior
-	return NewObservableProcess(sessionDir, cfg, logger), nil
+	return NewProcess(sessionDir, cfg, logger), nil
 }
 
 // MockProcess is a mock implementation of Process for testing.
 type MockProcess struct {
-	running          bool
-	startFunc        func(ctx context.Context) error
-	sendMessageFunc  func(ctx context.Context, message string, handler ResponseHandler) error
-	closeFunc        func() error
+	running         bool
+	startFunc       func(ctx context.Context) error
+	sendMessageFunc func(ctx context.Context, message string, handler ResponseHandler) error
+	closeFunc       func() error
 }
 
 // NewMockProcess creates a new mock process.

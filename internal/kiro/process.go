@@ -1,7 +1,6 @@
 package kiro
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"io"
@@ -51,8 +50,8 @@ func (p *Process) Start(ctx context.Context) error {
 		return nil
 	}
 
-	// Build command
-	p.cmd = exec.CommandContext(ctx, p.binaryPath)
+	// Build command - use "chat" subcommand for interactive mode with auto-approval
+	p.cmd = exec.CommandContext(ctx, p.binaryPath, "chat", "--trust-all-tools")
 	p.cmd.Dir = p.sessionDir
 
 	// Get Q_TERM version from environment or use kiro-cli version
@@ -138,7 +137,6 @@ func (p *Process) waitForStartup(ctx context.Context) error {
 			output.Write(buf[:n])
 			result := p.parser.Parse([]byte(output.String()))
 			if result.IsComplete {
-				p.logger.Debug("startup complete", zap.String("output", result.CleanText))
 				return nil
 			}
 		}
@@ -154,16 +152,20 @@ func (p *Process) SendMessage(ctx context.Context, message string, handler Respo
 		return fmt.Errorf("process not running")
 	}
 
-	// Write message to PTY
-	_, err := p.pty.Write([]byte(message + "\n"))
+	// Write message to PTY - use \r (carriage return) for PTY input, not \n
+	_, err := p.pty.Write([]byte(message + "\r"))
 	if err != nil {
 		return fmt.Errorf("failed to write message: %w", err)
 	}
 
-	p.logger.Debug("sent message to kiro", zap.String("message", message))
-
 	// Read response
 	return p.readResponse(ctx, handler)
+}
+
+// readResult holds the result of a PTY read operation.
+type readResult struct {
+	n   int
+	err error
 }
 
 // readResponse reads PTY output until completion.
@@ -171,68 +173,72 @@ func (p *Process) readResponse(ctx context.Context, handler ResponseHandler) err
 	ctx, cancel := context.WithTimeout(ctx, p.responseTimeout)
 	defer cancel()
 
-	reader := bufio.NewReader(p.pty)
 	var fullOutput strings.Builder
-	lastChunkTime := time.Now()
 	noOutputTimeout := 5 * time.Second
 
+	// Channel for PTY read results
+	readCh := make(chan readResult, 1)
+
 	for {
+		// Start a read in a goroutine
+		buf := make([]byte, 4096)
+		go func() {
+			n, err := p.pty.Read(buf)
+			readCh <- readResult{n: n, err: err}
+		}()
+
+		// Wait for read, context, or silence timeout
+		silenceTimer := time.NewTimer(noOutputTimeout)
 		select {
 		case <-ctx.Done():
-			// Timeout - send what we have as complete
+			silenceTimer.Stop()
 			if fullOutput.Len() > 0 {
 				result := p.parser.Parse([]byte(fullOutput.String()))
 				handler(result.CleanText, true)
 			}
 			return nil
-		default:
-		}
 
-		// Set read deadline for non-blocking read
-		p.pty.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+		case <-silenceTimer.C:
+			// Silence timeout - no data for 5 seconds
+			if fullOutput.Len() > 0 {
+				result := p.parser.Parse([]byte(fullOutput.String()))
+				if result.HasContent {
+					handler(result.CleanText, true)
+					return nil
+				}
+			}
+			// Continue waiting if no content yet
 
-		line, err := reader.ReadString('\n')
-		if err != nil {
-			if os.IsTimeout(err) {
-				// Check for silence timeout (response likely complete)
-				if time.Since(lastChunkTime) > noOutputTimeout && fullOutput.Len() > 0 {
-					result := p.parser.Parse([]byte(fullOutput.String()))
-					if result.HasContent {
+		case res := <-readCh:
+			silenceTimer.Stop()
+			if res.err != nil {
+				if res.err == io.EOF {
+					if fullOutput.Len() > 0 {
+						result := p.parser.Parse([]byte(fullOutput.String()))
 						handler(result.CleanText, true)
-						return nil
 					}
+					return nil
 				}
 				continue
 			}
-			if err == io.EOF {
-				break
+
+			if res.n > 0 {
+				fullOutput.Write(buf[:res.n])
+
+				// Check if response is complete
+				result := p.parser.Parse([]byte(fullOutput.String()))
+				if result.IsComplete {
+					handler(result.CleanText, true)
+					return nil
+				}
+
+				// Send intermediate chunk
+				if result.HasContent {
+					handler(result.CleanText, false)
+				}
 			}
-			continue
-		}
-
-		lastChunkTime = time.Now()
-		fullOutput.WriteString(line)
-
-		// Check if response is complete
-		result := p.parser.Parse([]byte(fullOutput.String()))
-		if result.IsComplete {
-			handler(result.CleanText, true)
-			return nil
-		}
-
-		// Send intermediate chunk
-		if result.HasContent {
-			handler(result.CleanText, false)
 		}
 	}
-
-	// Send final output
-	if fullOutput.Len() > 0 {
-		result := p.parser.Parse([]byte(fullOutput.String()))
-		handler(result.CleanText, true)
-	}
-
-	return nil
 }
 
 // IsRunning checks if the process is alive.

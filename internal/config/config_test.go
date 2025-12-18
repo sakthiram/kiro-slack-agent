@@ -111,16 +111,13 @@ slack:
 	// Check defaults
 	assert.Equal(t, "kiro-cli", cfg.Kiro.BinaryPath)
 	assert.Equal(t, "/tmp/kiro-sessions", cfg.Kiro.SessionBasePath)
-	assert.Equal(t, 100, cfg.Session.MaxSessionsTotal)
-	assert.Equal(t, 5, cfg.Session.MaxSessionsUser)
 	assert.Equal(t, "info", cfg.Logging.Level)
 	assert.Equal(t, "json", cfg.Logging.Format)
 
-	// Check web defaults
-	assert.False(t, cfg.Web.Enabled)
-	assert.Equal(t, ":8080", cfg.Web.ListenAddr)
-	assert.Equal(t, "./web/static", cfg.Web.StaticPath)
-	assert.Equal(t, 10, cfg.Web.MaxObserversPerSession)
+	// Check beads defaults
+	assert.Equal(t, "/var/kiro-agent/sessions", cfg.Beads.SessionsBasePath)
+	assert.Equal(t, "slack", cfg.Beads.IssuePrefix)
+	assert.Equal(t, 20, cfg.Beads.ContextMaxMessages)
 }
 
 func TestLoad_InvalidLogLevel(t *testing.T) {
