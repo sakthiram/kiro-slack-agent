@@ -224,5 +224,19 @@ func (w *Worker) processTaskInternal(ctx context.Context, task *queue.TaskWork, 
 		)
 	}
 
+	// Mark task as closed so it won't be picked up again by bd ready
+	// Valid statuses: open, in_progress, blocked, closed
+	w.logger.Debug("marking task as closed",
+		zap.String("issue_id", task.IssueID),
+	)
+
+	if err := w.beadsMgr.UpdateTaskStatus(ctx, task.UserID, task.IssueID, "closed"); err != nil {
+		w.logger.Warn("failed to mark task as closed",
+			zap.String("issue_id", task.IssueID),
+			zap.Error(err),
+		)
+		// Non-fatal - the task was processed successfully
+	}
+
 	return nil
 }

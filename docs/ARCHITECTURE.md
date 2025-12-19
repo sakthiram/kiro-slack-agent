@@ -618,10 +618,30 @@ sync:
 
 ```yaml
 beads:
-  sessions_base_path: "/var/kiro-agent/sessions"  # Base path for user dirs
-  issue_prefix: "slack"                            # Prefix for issue IDs
-  context_max_messages: 20                         # Max messages in context
+  # Persistent path for user sessions (each user gets their own .beads directory)
+  # Structure: {sessions_base_path}/{user_id}/.beads/
+  sessions_base_path: "/Users/youruser/.kiro-agent/sessions"  # Use persistent path!
+  issue_prefix: "slack"                                        # Prefix for issue IDs
+  context_max_messages: 20                                     # Max messages in context
 ```
+
+**Important**: Use a persistent path (not `/tmp`) to preserve data across restarts.
+
+**Directory Structure:**
+```
+{sessions_base_path}/
+├── {user_id_1}/                    # Slack user ID (e.g., W0175971WA3)
+│   └── .beads/
+│       ├── beads.db                # SQLite database
+│       ├── issues.jsonl            # JSONL backup (human-readable)
+│       ├── config.yaml             # Beads config
+│       └── metadata.json
+├── {user_id_2}/
+│   └── .beads/
+└── ...
+```
+
+Each user gets isolated storage - their conversations, issues, and context are separate.
 
 ### Kiro Configuration
 
@@ -679,21 +699,28 @@ logging:
 ### Check Beads State
 
 ```bash
+# Navigate to user's beads directory
+cd {sessions_base_path}/<user-id>
+# e.g., cd /Users/youruser/.kiro-agent/sessions/W0175971WA3
+
 # List all issues
-cd /var/kiro-agent/sessions/<user-id>
 bd list
+
+# List by status
+bd list --status open
+bd list --status closed
 
 # Show issue details
 bd show <issue-id> --json
 
-# Check ready tasks
+# Check ready tasks (what poller picks up)
 bd ready --json
 ```
 
 ### Test Kiro CLI Standalone
 
 ```bash
-cd /var/kiro-agent/sessions/<user-id>
+cd {sessions_base_path}/<user-id>
 kiro-cli chat --agent --trust-all-tools --no-interactive "hello"
 ```
 

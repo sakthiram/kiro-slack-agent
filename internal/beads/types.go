@@ -9,7 +9,7 @@ type Issue struct {
 	Description string    `json:"description"`
 	Status      string    `json:"status"`
 	Priority    int       `json:"priority"`
-	Type        string    `json:"type"`
+	Type        string    `json:"issue_type"` // bd uses "issue_type" not "type"
 	ParentID    string    `json:"parent_id,omitempty"`
 	Labels      []string  `json:"labels"`
 	Comments    []Comment `json:"comments"`
@@ -25,9 +25,10 @@ type ReadyTask struct {
 
 // Comment represents a comment on an issue.
 type Comment struct {
-	ID        string    `json:"id"`
+	ID        int       `json:"id"`   // bd uses int for comment IDs
+	IssueID   string    `json:"issue_id,omitempty"`
 	Author    string    `json:"author"`
-	Content   string    `json:"content"`
+	Content   string    `json:"text"` // bd uses "text" not "content"
 	CreatedAt time.Time `json:"created_at"`
 }
 

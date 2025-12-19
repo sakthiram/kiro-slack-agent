@@ -249,10 +249,17 @@ func (m *Manager) GetConversationContext(ctx context.Context, userID, issueID st
 		return nil, fmt.Errorf("failed to get issue: %w", err)
 	}
 
-	var issue Issue
-	if err := json.Unmarshal(output, &issue); err != nil {
+	// bd show --json returns an array with a single element
+	var issues []Issue
+	if err := json.Unmarshal(output, &issues); err != nil {
 		return nil, fmt.Errorf("failed to parse issue: %w", err)
 	}
+
+	if len(issues) == 0 {
+		return nil, fmt.Errorf("issue not found: %s", issueID)
+	}
+
+	issue := issues[0]
 
 	// Convert comments to messages
 	var messages []Message
@@ -293,6 +300,9 @@ func parseComment(comment Comment) Message {
 	} else if strings.HasPrefix(content, "[assistant]") {
 		role = "assistant"
 		content = strings.TrimPrefix(content, "[assistant]")
+	} else if strings.HasPrefix(content, "[agent]") {
+		role = "assistant"
+		content = strings.TrimPrefix(content, "[agent]")
 	}
 
 	return Message{
@@ -546,12 +556,17 @@ func (m *Manager) GetIssue(ctx context.Context, userID, issueID string) (*Issue,
 		return nil, fmt.Errorf("failed to get issue: %w", err)
 	}
 
-	var issue Issue
-	if err := json.Unmarshal(output, &issue); err != nil {
+	// bd show --json returns an array with a single element
+	var issues []Issue
+	if err := json.Unmarshal(output, &issues); err != nil {
 		return nil, fmt.Errorf("failed to parse issue: %w", err)
 	}
 
-	return &issue, nil
+	if len(issues) == 0 {
+		return nil, fmt.Errorf("issue not found: %s", issueID)
+	}
+
+	return &issues[0], nil
 }
 
 // AddLabel runs `bd update <id> --add-label <label>` to add a label to an issue.

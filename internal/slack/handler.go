@@ -255,27 +255,27 @@ func (h *Handler) handleWithFeatureProcessor(msg *MessageEvent, logger *zap.Logg
 
 		if err != nil {
 			logger.Error("feature processor error", zap.Error(err), zap.Bool("is_main_post", isMainPost))
-			// Post error message to Slack
+			// Post error message to Slack - always in thread
 			errMsg := "❌ Sorry, I encountered an error processing your message."
-			if msg.ThreadTS != "" {
-				_, _ = h.client.PostMessage(ctx, msg.ChannelID, errMsg, WithThreadTS(msg.ThreadTS))
-			} else {
-				_, _ = h.client.PostMessage(ctx, msg.ChannelID, errMsg)
+			errThreadTS := msg.ThreadTS
+			if isMainPost {
+				errThreadTS = msg.MessageTS
 			}
+			_, _ = h.client.PostMessage(ctx, msg.ChannelID, errMsg, WithThreadTS(errThreadTS))
 			return
 		}
 
-		// Post acknowledgment message
-		if msg.ThreadTS != "" && !isMainPost {
-			// Reply in thread for thread replies
-			if _, err := h.client.PostMessage(ctx, msg.ChannelID, ackMessage, WithThreadTS(msg.ThreadTS)); err != nil {
-				logger.Error("failed to post acknowledgment", zap.Error(err))
-			}
+		// Post acknowledgment message - always in thread
+		var threadTS string
+		if isMainPost {
+			// For main posts, reply in the thread of the post itself
+			threadTS = msg.MessageTS
 		} else {
-			// Post in channel for main posts
-			if _, err := h.client.PostMessage(ctx, msg.ChannelID, ackMessage); err != nil {
-				logger.Error("failed to post acknowledgment", zap.Error(err))
-			}
+			// For thread replies, reply in the same thread
+			threadTS = msg.ThreadTS
+		}
+		if _, err := h.client.PostMessage(ctx, msg.ChannelID, ackMessage, WithThreadTS(threadTS)); err != nil {
+			logger.Error("failed to post acknowledgment", zap.Error(err))
 		}
 
 		logger.Info("feature processing initiated", zap.Bool("is_main_post", isMainPost))

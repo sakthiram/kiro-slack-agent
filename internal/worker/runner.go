@@ -29,7 +29,7 @@ func NewKiroRunner(cfg *config.KiroConfig, logger *zap.Logger) *KiroRunner {
 }
 
 // Run executes kiro-cli in non-interactive mode and returns the response.
-// The command is run with --agent, --trust-all-tools, --no-interactive, and --wrap never flags.
+// The command is run with --trust-all-tools, --no-interactive, and --wrap never flags.
 func (r *KiroRunner) Run(ctx context.Context, workDir, prompt string) (string, error) {
 	// Create a timeout context if not already set
 	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
@@ -47,7 +47,6 @@ func (r *KiroRunner) Run(ctx context.Context, workDir, prompt string) (string, e
 	// Build the command
 	cmd := exec.CommandContext(ctx, r.binaryPath,
 		"chat",
-		"--agent",
 		"--trust-all-tools",
 		"--no-interactive",
 		"--wrap", "never",
