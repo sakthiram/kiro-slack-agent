@@ -58,19 +58,29 @@ func (p *Parser) Parse(rawOutput []byte) *ParseResult {
 	}
 }
 
-// removeControlChars removes control characters except newline and tab.
+// removeControlChars removes control characters except newline, tab, and carriage return.
+// Carriage return is preserved so line ending normalization can handle it.
 func removeControlChars(text string) string {
 	var result strings.Builder
 	for _, r := range text {
-		if r == '\n' || r == '\t' || r >= 32 {
+		if r == '\n' || r == '\t' || r == '\r' || r >= 32 {
 			result.WriteRune(r)
 		}
 	}
 	return result.String()
 }
 
-// detectPrompt checks if the output ends with a kiro-cli prompt.
+// detectPrompt checks if the output indicates kiro-cli has finished responding.
 func detectPrompt(text string) bool {
+	// kiro-cli shows "▸ Time: Xs" after completing a response
+	if strings.Contains(text, "Time:") && strings.Contains(text, "s\n") {
+		return true
+	}
+	// Also check for the exit hint which appears after response
+	if strings.Contains(text, "To exit the CLI") || strings.Contains(text, "/quit") {
+		return true
+	}
+	// Check for prompt patterns at end of lines (fallback)
 	lines := strings.Split(text, "\n")
 	for i := len(lines) - 1; i >= 0; i-- {
 		line := strings.TrimSpace(lines[i])

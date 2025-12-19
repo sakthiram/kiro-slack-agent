@@ -14,6 +14,8 @@ type Config struct {
 	Kiro      KiroConfig      `mapstructure:"kiro"`
 	Beads     BeadsConfig     `mapstructure:"beads"`
 	Streaming StreamingConfig `mapstructure:"streaming"`
+	Worker    WorkerConfig    `mapstructure:"worker"`
+	Sync      SyncConfig      `mapstructure:"sync"`
 	Logging   LoggingConfig   `mapstructure:"logging"`
 }
 
@@ -49,6 +51,21 @@ type StreamingConfig struct {
 type LoggingConfig struct {
 	Level  string `mapstructure:"level"`  // debug, info, warn, error
 	Format string `mapstructure:"format"` // json, console
+}
+
+// WorkerConfig holds worker pool configuration.
+type WorkerConfig struct {
+	PoolSize     int           `mapstructure:"pool_size"`     // default: 3
+	PollInterval time.Duration `mapstructure:"poll_interval"` // default: 10s
+	TaskTimeout  time.Duration `mapstructure:"task_timeout"`  // default: 5m
+	MaxRetries   int           `mapstructure:"max_retries"`   // default: 2
+	RetryBackoff time.Duration `mapstructure:"retry_backoff"` // default: 30s
+}
+
+// SyncConfig holds comment synchronization configuration.
+type SyncConfig struct {
+	SyncInterval time.Duration `mapstructure:"sync_interval"` // default: 5s
+	Enabled      bool          `mapstructure:"enabled"`       // default: true
 }
 
 // Load reads configuration from file and environment variables.
@@ -111,6 +128,17 @@ func setDefaults(v *viper.Viper) {
 
 	// Streaming defaults
 	v.SetDefault("streaming.update_interval", 500*time.Millisecond)
+
+	// Worker defaults
+	v.SetDefault("worker.pool_size", 3)
+	v.SetDefault("worker.poll_interval", 10*time.Second)
+	v.SetDefault("worker.task_timeout", 5*time.Minute)
+	v.SetDefault("worker.max_retries", 2)
+	v.SetDefault("worker.retry_backoff", 30*time.Second)
+
+	// Sync defaults
+	v.SetDefault("sync.sync_interval", 5*time.Second)
+	v.SetDefault("sync.enabled", true)
 
 	// Logging defaults
 	v.SetDefault("logging.level", "info")

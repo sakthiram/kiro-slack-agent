@@ -21,6 +21,8 @@ type BeadsManager interface {
 	CreateThreadIssue(ctx context.Context, userID string, thread *beads.ThreadInfo, message string) (*beads.Issue, error)
 	UpdateThreadIssue(ctx context.Context, userID, issueID, role, message string) error
 	GetConversationContext(ctx context.Context, userID, issueID string) ([]beads.Message, error)
+	CreateFeature(ctx context.Context, userID string, thread *beads.ThreadInfo, title, desc string) (*beads.Issue, error)
+	CreateTask(ctx context.Context, userID, parentID string, thread *beads.ThreadInfo, title string) (*beads.Issue, error)
 }
 
 // MessageProcessor handles processing of incoming Slack messages.

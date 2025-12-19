@@ -48,6 +48,8 @@ func TestParser_RemoveANSI(t *testing.T) {
 }
 
 func TestParser_DetectCompletion(t *testing.T) {
+	// NOTE: This parser is deprecated - we now use non-interactive kiro-cli mode.
+	// These tests verify the kiro-cli specific prompt detection patterns.
 	p := NewParser()
 
 	tests := []struct {
@@ -61,23 +63,23 @@ func TestParser_DetectCompletion(t *testing.T) {
 			want:  true,
 		},
 		{
-			name:  "ends with $",
-			input: "some output\n$",
+			name:  "ends with > space",
+			input: "some output\n> ",
 			want:  true,
 		},
 		{
-			name:  "ends with kiro>",
-			input: "some output\nkiro>",
+			name:  "ends with profile prompt",
+			input: "some output\n[amelia_agent] >",
 			want:  true,
 		},
 		{
-			name:  "ends with claude>",
-			input: "some output\nclaude>",
+			name:  "kiro-cli time indicator",
+			input: "some response\n▸ Time: 5.2s\n",
 			want:  true,
 		},
 		{
-			name:  "ends with assistant>",
-			input: "some output\nassistant>",
+			name:  "kiro-cli exit hint",
+			input: "some response\nTo exit the CLI, type /quit\n",
 			want:  true,
 		},
 		{

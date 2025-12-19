@@ -7,43 +7,48 @@ This document describes the technical architecture of the Amelia Slack Agent, in
 - [System Overview](#system-overview)
 - [Core Components](#core-components)
 - [Message Flow](#message-flow)
-- [Session Lifecycle](#session-lifecycle)
-- [Streaming Architecture](#streaming-architecture)
+- [Task Processing](#task-processing)
+- [Comment Synchronization](#comment-synchronization)
 - [Error Handling](#error-handling)
-- [Data Persistence](#data-persistence)
 - [Concurrency Model](#concurrency-model)
+- [Configuration](#configuration)
 
 ## System Overview
 
-The Amelia Slack Agent is a Go-based service that bridges Slack conversations to the Kiro CLI agent. It uses Slack's Socket Mode for real-time event delivery and manages persistent sessions backed by SQLite.
+The Amelia Slack Agent is a Go-based service that bridges Slack conversations to the Kiro CLI agent using an **asynchronous, event-driven architecture**. It uses Slack's Socket Mode for real-time event delivery and **beads (bd)** for issue tracking and context management.
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                        Amelia Slack Agent                        │
-│                                                                  │
-│  ┌──────────────┐    ┌─────────────┐    ┌──────────────┐      │
-│  │   Slack      │    │   Session   │    │    Kiro      │      │
-│  │   Handler    │───▶│   Manager   │───▶│   Bridge     │      │
-│  └──────────────┘    └─────────────┘    └──────────────┘      │
-│         │                    │                   │              │
-│         │                    │                   │              │
-│  ┌──────▼──────┐    ┌────────▼──────┐   ┌───────▼────────┐   │
-│  │  Streamer   │    │  SQLite Store │   │  PTY Process   │   │
-│  └─────────────┘    └───────────────┘   └────────────────┘   │
-│         │                                         │             │
-└─────────┼─────────────────────────────────────────┼────────────┘
-          │                                         │
-          ▼                                         ▼
-    Slack API                                   kiro-cli
++------------------+     +------------------+     +------------------+
+|   SLACK EVENTS   |---->| FEATURE PROCESSOR|---->|   BEADS (bd)     |
+|  (Socket Mode)   |     |  (Create Issues) |     | (Feature/Task)   |
++------------------+     +------------------+     +------------------+
+        ^                                                 |
+        |                                                 v
+        |                                        +------------------+
+        |                                        |     POLLER       |
+        |                                        |  (bd ready)      |
+        +----------------------------------------+------------------+
+              (Comment Sync)                              |
+                                                          v
+                                                 +------------------+
+                                                 |  WORKER POOL     |
+                                                 |  (N goroutines)  |
+                                                 +------------------+
+                                                          |
+                                                          v
+                                                 +------------------+
+                                                 |  KIRO RUNNER     |
+                                                 | (Non-Interactive)|
+                                                 +------------------+
 ```
 
 ### Design Principles
 
-1. **Session Isolation**: Each Slack thread = independent Kiro CLI process
-2. **Stateful Persistence**: Sessions survive restarts via SQLite
-3. **Real-time Streaming**: Progressive message updates as responses arrive
-4. **Graceful Degradation**: Retry logic and timeout handling
-5. **Resource Management**: Automatic cleanup of idle sessions
+1. **Async Processing**: Slack handler returns immediately; AI processing happens in background
+2. **Issue-Driven**: Every conversation is tracked as a beads Feature/Task
+3. **Scalable Workers**: Configurable pool of workers process tasks concurrently
+4. **Comment Sync**: Agent responses flow back to Slack via beads comments
+5. **Stateless Handler**: No sessions needed; context reconstructed from beads
 
 ## Core Components
 
@@ -51,24 +56,16 @@ The Amelia Slack Agent is a Go-based service that bridges Slack conversations to
 
 **Location**: `internal/slack/handler.go`
 
-The Slack Handler manages Socket Mode events and routes messages to the appropriate processor.
+The Slack Handler manages Socket Mode events and routes messages to the Feature Processor.
 
 **Responsibilities**:
-- Listen for Socket Mode events
-- Parse `app_mention` and `message.im` events
-- Clean @mentions from message text
+- Listen for Socket Mode events (`app_mention`, `message.im`, `message.channels`)
+- Parse and clean @mentions from message text
 - Acknowledge events immediately
-- Dispatch to message processor asynchronously
+- Route to Feature Processor asynchronously
+- Post acknowledgment messages to users
 
-**Key Methods**:
-```go
-RegisterHandlers(socketClient)  // Sets up event loop
-HandleEvent(evt, socketClient)  // Routes Socket Mode events
-handleAppMention(ev)            // Processes @mentions
-handleMessage(ev)               // Processes DMs
-```
-
-**Event Flow**:
+**Event Routing**:
 ```
 Socket Mode Event
     │
@@ -76,274 +73,222 @@ Socket Mode Event
     │
     ├─▶ EventTypeEventsAPI
     │       │
-    │       ├─▶ app_mention ────────▶ handleAppMention()
-    │       └─▶ message.im ─────────▶ handleMessage()
+    │       ├─▶ app_mention ──────────┐
+    │       ├─▶ message.im ───────────┼──▶ handleWithFeatureProcessor()
+    │       └─▶ message.channels ─────┘
     │
     └─▶ EventTypeConnectionError ──▶ Log error
 ```
 
-### 2. Session Manager
+**Acknowledgment Messages**:
+- Main posts: "📝 Received! Working on it..."
+- Thread replies: "👍 Got it! Processing..."
 
-**Location**: `internal/session/manager.go`
+### 2. Feature Processor
 
-The Session Manager maintains the lifecycle of Kiro CLI sessions, including creation, tracking, and cleanup.
+**Location**: `internal/processor/feature_processor.go`
+
+The Feature Processor routes Slack messages to create beads issues (Features or Tasks).
 
 **Responsibilities**:
-- Map Slack threads to Kiro sessions (thread_ts → session)
-- Enforce session limits (per-user and total)
-- Create session working directories
-- Persist session state to SQLite
-- Automatic cleanup of idle sessions
-- Graceful shutdown
+- Determine if message is main post or thread reply
+- Create Feature issues for main posts (new conversations)
+- Create Task issues for thread replies (under parent Feature)
+- Add user message as comment on issue
+- Register issues with Comment Syncer for response delivery
+
+**Routing Logic**:
+```go
+if msg.ThreadTS == "" || msg.ThreadTS == msg.MessageTS {
+    // Main post → Create Feature
+    ProcessMainPost(ctx, msg)
+} else {
+    // Thread reply → Create Task under parent Feature
+    ProcessThreadReply(ctx, msg)
+}
+```
+
+**Issue Structure**:
+```
+Feature (slack-xxx)           ← Main Slack post
+├── Title: First line of message
+├── Description: Full message text
+├── Labels: thread:<ts>, channel:<id>, user:<id>
+├── Comments:
+│   ├── [user] Original message
+│   └── [agent] Kiro response (synced to Slack)
+│
+└── Task (slack-xxx.1)        ← Thread reply
+    ├── Title: Reply message
+    ├── Parent: Feature ID
+    └── Comments: ...
+```
+
+### 3. Beads Manager
+
+**Location**: `internal/beads/manager.go`
+
+The Beads Manager wraps the `bd` CLI for issue CRUD operations.
 
 **Key Methods**:
 ```go
-GetOrCreate(ctx, channelID, threadTS, userID)  // Get or create session
-UpdateActivity(ctx, id)                        // Mark session active
-UpdateStatus(ctx, id, status)                  // Change session status
-Close(ctx, id)                                 // Terminate and cleanup
-Cleanup(ctx)                                   // Remove idle sessions
+// User directory management
+EnsureUserDir(ctx, userID) (string, error)  // Creates user session dir, runs bd init
+GetUserDir(userID) string                    // Returns path to user's beads dir
+ListUserDirs() []string                      // Lists all user directories
+
+// Issue operations
+FindThreadIssue(ctx, userID, thread) (*Issue, error)    // Find by thread labels
+CreateFeature(ctx, userID, thread, title, desc) error   // bd create -t feature
+CreateTask(ctx, userID, parentID, thread, title) error  // bd create -t task --parent
+GetIssue(ctx, userID, issueID) (*Issue, error)          // bd show --json
+
+// Task status
+GetReadyTasks(ctx, userID) ([]ReadyTask, error)         // bd ready --json
+UpdateTaskStatus(ctx, userID, issueID, status) error    // bd update --status
+
+// Comments
+UpdateThreadIssue(ctx, userID, issueID, role, msg) error  // Add comment
+AddAgentComment(ctx, userID, issueID, content) error      // Add [agent] prefixed comment
 ```
 
-**Session States**:
-- `active`: Available for new messages
-- `processing`: Currently handling a message
-- `error`: Failed state (will be cleaned up)
+**BD Commands Used**:
+| Method | BD Command |
+|--------|------------|
+| `EnsureUserDir` | `bd init` |
+| `CreateFeature` | `bd create -t feature --label ...` |
+| `CreateTask` | `bd create -t task --parent ...` |
+| `GetReadyTasks` | `bd ready --json` |
+| `UpdateTaskStatus` | `bd update <id> --status <status>` |
+| `AddAgentComment` | `bd comment <id> "[agent] ..."` |
 
-**Cleanup Process**:
-```
-Periodic Timer (5 min)
-    │
-    ▼
-List Sessions (idle > 30 min)
-    │
-    ├─▶ Skip if status == processing
-    │
-    ├─▶ Close session
-    │   ├─▶ Remove working directory
-    │   └─▶ Delete from SQLite
-    │
-    └─▶ Log cleanup count
-```
+### 4. Task Queue
 
-### 3. Kiro Bridge
+**Location**: `internal/queue/`
 
-**Location**: `internal/kiro/process.go`, `internal/kiro/bridge.go`, `internal/kiro/retry_bridge.go`
+The Task Queue manages work items waiting to be processed.
 
-The Kiro Bridge manages communication with the Kiro CLI via a pseudo-terminal (PTY).
+**Files**:
+- `types.go`: TaskWork and TaskResult structs
+- `queue.go`: Channel-based queue implementation
+- `poller.go`: Polls `bd ready` for new tasks
 
-**Architecture**:
-```
-┌─────────────────┐
-│  RetryBridge    │  Wrapper with retry logic
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│    Process      │  PTY-based CLI interaction
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│   PTY (pty.go)  │  Terminal interface
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│    kiro-cli     │  Actual CLI process
-└─────────────────┘
-```
-
-**Responsibilities**:
-- Spawn kiro-cli in PTY with proper environment
-- Send messages to CLI stdin
-- Read and parse CLI stdout (with ANSI stripping)
-- Detect response completion (prompt detection)
-- Handle process lifecycle (start, monitor, close)
-- Graceful termination (`/exit` command)
-
-**Key Methods**:
+**TaskWork Structure**:
 ```go
-Start(ctx)                              // Initialize Kiro CLI process
-SendMessage(ctx, msg, handler)          // Send message and stream response
-IsRunning()                             // Check process health
-Close()                                 // Gracefully terminate
+type TaskWork struct {
+    IssueID    string            // Beads issue ID
+    UserID     string            // User who owns the session
+    ThreadInfo *beads.ThreadInfo // Slack thread context
+    Priority   int               // Task priority (from issue)
+    Retries    int               // Current retry count
+    MaxRetries int               // Max retries allowed
+    CreatedAt  time.Time
+}
 ```
 
-**PTY Configuration**:
-```go
-Environment:
-  TERM=xterm-256color
-  COLORTERM=truecolor
-  Q_TERM=<version>  // Kiro terminal integration
-
-Terminal Size:
-  Rows: 40
-  Cols: 120
+**Poller Loop**:
 ```
-
-**Response Reading Flow**:
-```
-Send message + "\n" to PTY stdin
+Every poll_interval (default 10s):
     │
-    ▼
-Read PTY stdout line-by-line
+    ├─▶ List all user directories
     │
-    ├─▶ Parse with OutputParser
-    │   ├─▶ Strip ANSI codes
-    │   ├─▶ Detect prompt (IsComplete)
-    │   └─▶ Extract clean text
-    │
-    ├─▶ Call ResponseHandler(chunk, isComplete=false)
-    │
-    ├─▶ Check for completion
-    │   ├─▶ Prompt detected ──────────▶ Return with isComplete=true
-    │   ├─▶ Timeout (120s) ───────────▶ Return with accumulated output
-    │   └─▶ Silence (5s no output) ───▶ Return with accumulated output
-    │
-    └─▶ Continue reading
-```
-
-### 4. Output Parser
-
-**Location**: `internal/kiro/output_parser.go`
-
-The Output Parser cleans PTY output and detects response completion.
-
-**Responsibilities**:
-- Strip ANSI escape codes (colors, cursor movements)
-- Remove Kiro CLI prompts
-- Detect command completion
-- Extract clean text for display
-
-**ANSI Code Removal**:
-```go
-// Removes sequences like:
-\x1b[31m          // Color codes
-\x1b[2J           // Clear screen
-\x1b[H            // Cursor home
-\x1b[?25l         // Hide cursor
-```
-
-**Prompt Detection**:
-```go
-Common prompts detected:
-  "kiro>"
-  "assistant>"
-  "> "
-  "$ "
-```
-
-**Completion Detection Strategy**:
-1. Look for CLI prompt at end of output
-2. Check for silence timeout (5s no new output)
-3. Apply global response timeout (120s)
-
-### 5. Streamer
-
-**Location**: `internal/streaming/streamer.go`, `internal/streaming/buffer.go`
-
-The Streamer manages progressive Slack message updates with debouncing to avoid rate limits.
-
-**Architecture**:
-```
-ResponseHandler(chunk)
-    │
-    ▼
-OutputBuffer.Append(chunk)
-    │
-    ├─▶ Accumulate in buffer
-    │
-    ├─▶ Debounce (500ms)
-    │
-    └─▶ Flush Callback
+    └─▶ For each user:
             │
-            ▼
-    Streamer.doUpdate(content)
+            ├─▶ Run `bd ready --json`
             │
-            ▼
-    Slack UpdateMessage(content + ✍️)
+            └─▶ Enqueue each ready task
 ```
 
-**Responsibilities**:
-- Post initial "Thinking..." message
-- Accumulate response chunks
-- Debounce updates (default 500ms)
-- Add streaming indicator (✍️) during updates
-- Post final message (without indicator)
-- Handle errors gracefully
+### 5. Worker Pool
 
-**State Machine**:
+**Location**: `internal/worker/`
+
+The Worker Pool processes tasks concurrently using Kiro CLI.
+
+**Files**:
+- `pool.go`: WorkerPool management
+- `worker.go`: Individual worker logic
+- `runner.go`: KiroRunner for CLI execution
+
+**Worker Flow**:
 ```
-[Not Started]
+Worker.processTask(task)
     │
-    ▼ Start()
-[Started] ──────┐
-    │           │
-    │ Update()  │
-    ▼           │
-[Updating] ◀────┘
+    ├─▶ Update status to "in_progress"
+    │       bd update <id> --status in_progress
     │
-    ├─▶ Complete() ──▶ [Completed]
+    ├─▶ Get issue details
+    │       bd show <id> --json
     │
-    └─▶ Error() ─────▶ [Completed]
+    ├─▶ Build prompt from issue + comments
+    │
+    ├─▶ Run Kiro CLI (non-interactive)
+    │       kiro-cli chat --agent --trust-all-tools \
+    │           --no-interactive --wrap never "<prompt>"
+    │
+    ├─▶ Add agent comment with response
+    │       bd comment <id> "[agent] <response>"
+    │
+    ├─▶ Update status to "completed" (or "blocked" on error)
+    │
+    └─▶ Trigger comment sync to Slack
 ```
 
-**Debouncing Strategy**:
-```
-Time ──────────────────────────────────────────────▶
-      │   chunk1   chunk2   chunk3        chunk4
-      │     │        │        │              │
-      ├─────▼────────▼────────▼──────────────▼─────
-      │    [────buffer────]  flush    [buffer]
-      │         (500ms)                  │
-      └──────────────┼────────────────────┼────────
-                     ▼                    ▼
-             UpdateMessage(1-3)   UpdateMessage(4)
-```
-
-This reduces Slack API calls while maintaining real-time feel.
-
-### 6. SQLite Store
-
-**Location**: `internal/session/sqlite_store.go`
-
-The SQLite Store provides persistent session storage.
-
-**Schema**:
-```sql
-CREATE TABLE sessions (
-    id TEXT PRIMARY KEY,           -- thread_ts (e.g., "1234567890.123456")
-    channel_id TEXT NOT NULL,
-    user_id TEXT NOT NULL,
-    kiro_session_dir TEXT NOT NULL,
-    status TEXT NOT NULL,          -- active, processing, error
-    created_at INTEGER NOT NULL,   -- Unix timestamp
-    last_activity INTEGER NOT NULL, -- Unix timestamp
-    metadata TEXT                  -- JSON for future extension
-);
-
-CREATE INDEX idx_user_id ON sessions(user_id);
-CREATE INDEX idx_last_activity ON sessions(last_activity);
-```
-
-**Responsibilities**:
-- CRUD operations for sessions
-- Query by user, idle time, status
-- Transaction support for consistency
-- Automatic database initialization
-
-**Key Queries**:
+**KiroRunner**:
 ```go
-Get(id)                    // SELECT by id
-Save(session)              // INSERT or UPDATE
-Delete(id)                 // DELETE by id
-List()                     // SELECT all
-ListByUser(userID)         // SELECT by user_id
-ListIdle(since)            // SELECT by last_activity < since
-Count()                    // SELECT COUNT(*)
-CountByUser(userID)        // SELECT COUNT(*) by user_id
+func (r *KiroRunner) Run(ctx context.Context, workDir, prompt string) (string, error) {
+    cmd := exec.CommandContext(ctx, r.binaryPath,
+        "chat", "--agent", "--trust-all-tools",
+        "--no-interactive", "--wrap", "never",
+        prompt)
+    cmd.Dir = workDir
+    cmd.Env = append(os.Environ(), "TERM=dumb")
+
+    output, err := cmd.CombinedOutput()
+    // Parse and return response
+}
 ```
+
+### 6. Comment Syncer
+
+**Location**: `internal/sync/`
+
+The Comment Syncer posts agent responses from beads back to Slack threads.
+
+**Files**:
+- `tracker.go`: Tracks sync state per issue
+- `syncer.go`: Sync logic and loop
+
+**Sync State**:
+```go
+type SyncState struct {
+    IssueID          string
+    UserID           string
+    ChannelID        string
+    SlackThreadTS    string
+    SyncedCommentIDs map[string]bool  // Already synced comments
+}
+```
+
+**Sync Loop**:
+```
+Every sync_interval (default 5s):
+    │
+    └─▶ For each registered issue:
+            │
+            ├─▶ Get issue comments from beads
+            │
+            └─▶ For each [agent] comment not yet synced:
+                    │
+                    ├─▶ Post to Slack thread
+                    │
+                    └─▶ Mark as synced
+```
+
+**Comment Format**:
+- Agent comments are prefixed with `[agent] ` in beads
+- Prefix is stripped when posting to Slack
+- Only `[agent]` comments are synced (not user comments)
 
 ## Message Flow
 
@@ -359,374 +304,241 @@ CountByUser(userID)        // SELECT COUNT(*) by user_id
 │  Slack Socket   │
 │      Mode       │
 └────┬────────────┘
-     │ EventsAPI (app_mention or message.im)
+     │ EventsAPI (app_mention or message)
      ▼
 ┌─────────────────┐
-│  Handler        │◀──── Parse & Clean Message
+│     Handler     │◀──── Parse & Clean Message
 │  (handler.go)   │
 └────┬────────────┘
-     │ MessageEvent
+     │ Async dispatch
      ▼
 ┌─────────────────────────────────┐
-│  Message Processor              │
-│  (main.go: processMessage)      │
+│     Feature Processor           │
+│  (feature_processor.go)         │
 └────┬────────────────────────────┘
      │
-     ├──▶ Determine thread_ts (root or thread)
+     ├──▶ Ensure user beads directory
+     │        bd init (if needed)
      │
-     ├──▶ SessionManager.GetOrCreate()
-     │        │
-     │        ├─▶ Check session limits
-     │        ├─▶ Create session directory
-     │        └─▶ Save to SQLite
+     ├──▶ Create Feature or Task
+     │        bd create -t feature/task --label ...
      │
-     ├──▶ UpdateStatus(processing)
+     ├──▶ Add user message as comment
+     │        bd comment <id> "[user] message"
      │
-     ├──▶ Streamer.Start()
-     │        │
-     │        └─▶ Post "🤔 Thinking..." to Slack
+     ├──▶ Register with Syncer
      │
-     ├──▶ Get or create KiroBridge
-     │        │
-     │        ├─▶ NewProcess(sessionDir)
-     │        ├─▶ NewRetryBridge(process)
-     │        └─▶ bridge.Start()
-     │                │
-     │                ├─▶ Spawn kiro-cli in PTY
-     │                └─▶ Wait for initial prompt
+     └──▶ Return (handler posts acknowledgment)
+
+
+┌─────────────────┐
+│     Poller      │  (Every 10s)
+└────┬────────────┘
      │
-     ├──▶ bridge.SendMessage(msg, ResponseHandler)
-     │        │
-     │        ├─▶ Write msg + "\n" to PTY stdin
-     │        │
-     │        └─▶ Read PTY stdout
-     │                │
-     │                └─▶ For each chunk:
-     │                        │
-     │                        ├─▶ Parser.Parse(chunk)
-     │                        │        │
-     │                        │        ├─▶ Strip ANSI
-     │                        │        └─▶ Detect completion
-     │                        │
-     │                        └─▶ ResponseHandler(cleanText, isComplete)
-     │                                │
-     │                                └─▶ Streamer.Update(cleanText)
-     │                                        │
-     │                                        └─▶ Buffer.Append()
-     │                                                │
-     │                                                └─▶ Debounce (500ms)
-     │                                                        │
-     │                                                        └─▶ Slack UpdateMessage()
+     ├──▶ bd ready --json (for each user)
      │
-     ├──▶ Streamer.Complete(finalResponse)
-     │        │
-     │        └─▶ Slack UpdateMessage (no indicator)
+     └──▶ Enqueue tasks to TaskQueue
+
+
+┌─────────────────┐
+│  Worker Pool    │
+└────┬────────────┘
      │
-     └──▶ UpdateStatus(active)
+     ├──▶ Dequeue task
+     │
+     ├──▶ bd update <id> --status in_progress
+     │
+     ├──▶ Build prompt from issue
+     │
+     ├──▶ kiro-cli chat --no-interactive "<prompt>"
+     │
+     ├──▶ bd comment <id> "[agent] <response>"
+     │
+     └──▶ bd update <id> --status completed
+
+
+┌─────────────────┐
+│  Comment Syncer │  (Every 5s)
+└────┬────────────┘
+     │
+     ├──▶ Get issue comments
+     │
+     └──▶ Post [agent] comments to Slack thread
 ```
 
-### Error Handling Flow
+### Main Post vs Thread Reply
 
+**Main Post** (new conversation):
 ```
-SendMessage() Error
+User posts in channel: "@AmeliaBot help me write a script"
     │
-    ▼
-RetryBridge.SendMessage()
-    │
-    ├─▶ Attempt 1 (initial) ────▶ Success ──▶ Return
-    │                              │
-    │                              ▼
-    │                          Log warning
-    │                              │
-    │                              ▼
-    ├─▶ Attempt 2 (retry) ──────▶ Success ──▶ Return
-    │                              │
-    │                              ▼
-    └─▶ Failure after retries
+    └──▶ ProcessMainPost()
             │
-            ▼
-    Streamer.Error(err)
+            ├──▶ CreateFeature("help me write a script", ...)
+            │       Type: feature
+            │       Labels: thread:1234.5678, channel:C123, user:U456
             │
-            ├─▶ UpdateMessage("❌ Error: ...")
+            └──▶ Response: "📝 Received! Working on it..."
+```
+
+**Thread Reply** (continue conversation):
+```
+User replies in thread: "Now add error handling"
+    │
+    └──▶ ProcessThreadReply()
             │
-            ├─▶ Remove bridge from cache
+            ├──▶ FindThreadIssue() → parent Feature
             │
-            └─▶ Close bridge
-```
-
-## Session Lifecycle
-
-### Creation
-
-```
-User sends message in new thread
-    │
-    ▼
-SessionManager.GetOrCreate()
-    │
-    ├─▶ Check if session exists (by thread_ts)
-    │   └─▶ Yes: Update activity, return existing
-    │
-    ├─▶ Check user session limit (max 5)
-    │   └─▶ Exceeded: Return error
-    │
-    ├─▶ Check total session limit (max 100)
-    │   └─▶ Exceeded: Return error
-    │
-    ├─▶ Create session directory: /tmp/kiro-sessions/{thread_ts}
-    │
-    ├─▶ Create Session object
-    │       ChannelID:      "C1234..."
-    │       ThreadTS:       "1234567890.123456"
-    │       UserID:         "U1234..."
-    │       KiroSessionDir: "/tmp/kiro-sessions/1234567890.123456"
-    │       Status:         active
-    │       CreatedAt:      now
-    │       LastActivity:   now
-    │
-    └─▶ Save to SQLite
-```
-
-### Active Session
-
-```
-User sends message in existing thread
-    │
-    ▼
-SessionManager.GetOrCreate()
-    │
-    └─▶ Session exists
+            ├──▶ CreateTask("Now add error handling", parent=<feature-id>)
+            │       Type: task
+            │       Parent: slack-xxx (the Feature)
             │
-            ├─▶ UpdateActivity()
-            │       LastActivity = now
-            │
-            └─▶ Return existing session
+            └──▶ Response: "👍 Got it! Processing..."
 ```
 
-### Cleanup
+## Task Processing
+
+### Task States
 
 ```
-Cleanup Goroutine (every 5 minutes)
-    │
-    ▼
-SessionManager.Cleanup()
-    │
-    ├─▶ ListIdle(lastActivity < 30 minutes ago)
-    │
-    └─▶ For each idle session:
-            │
-            ├─▶ Skip if status == processing
-            │
-            ├─▶ Close(sessionID)
-            │       │
-            │       ├─▶ Get session from store
-            │       │
-            │       ├─▶ Remove directory: rm -rf /tmp/kiro-sessions/{thread_ts}
-            │       │
-            │       └─▶ Delete from SQLite
-            │
-            └─▶ Log cleanup
+┌─────────┐     Poller finds      ┌─────────────┐
+│  open   │ ───────────────────▶  │   ready     │
+└─────────┘     (bd ready)        └──────┬──────┘
+                                         │
+                                         │ Worker dequeues
+                                         ▼
+                                  ┌─────────────┐
+                                  │ in_progress │
+                                  └──────┬──────┘
+                                         │
+                          ┌──────────────┼──────────────┐
+                          │              │              │
+                          ▼              ▼              ▼
+                   ┌──────────┐   ┌──────────┐   ┌──────────┐
+                   │completed │   │ blocked  │   │   open   │
+                   └──────────┘   └──────────┘   └──────────┘
+                     Success      Error/Block    Retry (back to queue)
 ```
 
-### Shutdown
+### Prompt Building
 
-```
-SIGTERM/SIGINT received
-    │
-    ▼
-Cancel context
-    │
-    ├─▶ Stop Session Manager
-    │       │
-    │       └─▶ Stop cleanup goroutine
-    │
-    ├─▶ Close all bridges
-    │       │
-    │       └─▶ For each active bridge:
-    │               │
-    │               ├─▶ Send "/exit\n" to PTY
-    │               ├─▶ Wait 500ms
-    │               ├─▶ Close PTY
-    │               └─▶ Kill process
-    │
-    └─▶ Close SQLite store
-```
+The worker builds a prompt from the issue and its comments:
 
-## Streaming Architecture
-
-### Why Streaming?
-
-Kiro CLI responses can take 10-120 seconds. Without streaming:
-- User sees "Thinking..." for the entire duration
-- Poor user experience
-- No feedback on progress
-
-With streaming:
-- Real-time progressive updates
-- User sees response being built
-- Better engagement
-
-### Implementation
-
-**OutputBuffer** (`internal/streaming/buffer.go`):
 ```go
-type OutputBuffer struct {
-    content      string
-    mu           sync.Mutex
-    timer        *time.Timer
-    flushFunc    func(string) error
-    interval     time.Duration
-}
+func buildPrompt(issue *beads.Issue) string {
+    var sb strings.Builder
 
-func (b *OutputBuffer) Append(chunk string) error {
-    b.mu.Lock()
-    defer b.mu.Unlock()
+    sb.WriteString("Context:\n")
+    sb.WriteString(issue.Description)
+    sb.WriteString("\n\nConversation:\n")
 
-    b.content = chunk  // Replace with latest
-
-    if b.timer != nil {
-        b.timer.Stop()
+    for _, comment := range issue.Comments {
+        role := "User"
+        if strings.HasPrefix(comment.Content, "[agent]") {
+            role = "Assistant"
+        }
+        sb.WriteString(fmt.Sprintf("%s: %s\n", role, comment.Content))
     }
 
-    // Schedule flush after interval
-    b.timer = time.AfterFunc(b.interval, func() {
-        b.flush()
-    })
-}
-
-func (b *OutputBuffer) flush() {
-    b.mu.Lock()
-    content := b.content
-    b.mu.Unlock()
-
-    b.flushFunc(content)  // Update Slack message
+    sb.WriteString("\nPlease respond to the latest message.")
+    return sb.String()
 }
 ```
 
-**Key Properties**:
-- **Debouncing**: Accumulates rapid updates, flushes after quiet period
-- **Latest wins**: Always shows the latest full response (not incremental)
-- **Rate limit friendly**: Max 1 update per 500ms (configurable)
+### Retry Logic
 
-### Slack Rate Limits
+```go
+type TaskWork struct {
+    Retries    int  // Current retry count
+    MaxRetries int  // From config (default 2)
+}
 
-Slack API limits:
-- Tier 3 methods (chat.postMessage): 50/minute
-- Tier 2 methods (chat.update): 100/minute
+// On worker error:
+if task.Retries < task.MaxRetries {
+    task.Retries++
+    time.Sleep(cfg.Worker.RetryBackoff)  // default 30s
+    queue.Add(task)  // Re-enqueue
+} else {
+    beadsMgr.UpdateTaskStatus(ctx, userID, issueID, "blocked")
+}
+```
 
-With debouncing:
-- Worst case: 120 updates/minute (2/second)
-- Actual: ~5-10 updates per response
-- Well under rate limits
+## Comment Synchronization
+
+### Registration
+
+When Feature Processor creates an issue:
+
+```go
+syncer.RegisterIssue(issueID, userID, &beads.ThreadInfo{
+    ChannelID: msg.ChannelID,
+    ThreadTS:  threadTS,
+    UserID:    msg.UserID,
+})
+```
+
+### Sync Algorithm
+
+```go
+func (s *CommentSyncer) SyncIssue(ctx context.Context, issueID string) error {
+    state := s.tracker.Get(issueID)
+    if state == nil {
+        return nil  // Not registered
+    }
+
+    issue, _ := s.beadsMgr.GetIssue(ctx, state.UserID, issueID)
+
+    for _, comment := range issue.Comments {
+        // Skip already synced
+        if state.SyncedCommentIDs[comment.ID] {
+            continue
+        }
+
+        // Only sync [agent] comments
+        if !strings.HasPrefix(comment.Content, "[agent]") {
+            continue
+        }
+
+        // Post to Slack
+        content := strings.TrimPrefix(comment.Content, "[agent] ")
+        s.slackClient.PostMessage(ctx, state.ChannelID, content,
+            slack.WithThreadTS(state.SlackThreadTS))
+
+        state.SyncedCommentIDs[comment.ID] = true
+    }
+}
+```
 
 ## Error Handling
 
 ### Levels of Error Handling
 
-1. **Retry Logic** (RetryBridge)
-   - Automatic retry once on failure
-   - Logs warning on first failure
-   - Returns error after max retries
+1. **Feature Processor Errors**
+   - Log error
+   - Post error message to Slack thread
+   - User can retry by posting again
 
-2. **Graceful Degradation** (Streamer)
-   - Shows partial response on timeout
-   - Posts error message to user
-   - Cleans up resources
+2. **Worker Errors**
+   - Retry with backoff (up to MaxRetries)
+   - Mark issue as "blocked" after max retries
+   - Log detailed error for debugging
 
-3. **Resource Cleanup**
-   - Remove failed bridges from cache
-   - Close PTY and kill process
-   - Keep session for future retries (unless explicitly closed)
-
-4. **User Feedback**
-   - Clear error messages in Slack
-   - Error emoji (❌) for visibility
-   - Detailed logs for debugging
+3. **Sync Errors**
+   - Skip failed comment, retry next interval
+   - Log warning
+   - Eventually consistent
 
 ### Common Error Scenarios
 
-#### Kiro CLI Not Found
-```
-Error: exec: "kiro-cli": executable file not found in $PATH
-Action: Check kiro.binary_path in config
-Result: Error message to user, session preserved
-```
-
-#### Kiro CLI Timeout
-```
-Error: Response timeout after 120s
-Action: Return accumulated output as "complete"
-Result: Partial response shown to user
-```
-
-#### PTY Failure
-```
-Error: failed to start PTY: permission denied
-Action: Log error, retry once, then fail
-Result: Error message to user
-```
-
-#### Slack API Error
-```
-Error: slack: update_message: message_not_found
-Action: Log error, continue processing
-Result: Response lost, but Kiro session continues
-```
-
-## Data Persistence
-
-### Session Database
-
-**File**: SQLite database at configured path (default: `/tmp/kiro-agent/sessions.db`)
-
-**Purpose**:
-- Survive process restarts
-- Track active sessions across deployments
-- Enable cleanup on startup (orphaned sessions)
-
-**Migration Strategy**:
-- Database created on first run
-- Schema version tracking (future)
-- Indexes for performance
-
-### Session Directories
-
-**Location**: `{kiro.session_base_path}/{thread_ts}`
-
-**Example**: `/tmp/kiro-sessions/1234567890.123456/`
-
-**Contents**:
-- Kiro CLI working directory
-- Conversation history (managed by Kiro)
-- Any artifacts created by Kiro
-
-**Cleanup**:
-- Removed when session is closed
-- Automatically cleaned on session timeout
+| Error | Handling | Result |
+|-------|----------|--------|
+| `bd init` fails | Log error, return | User sees error message |
+| `bd create` fails | Log error, return | User sees error message |
+| `kiro-cli` timeout | Retry up to MaxRetries | Mark blocked if all fail |
+| Slack API error | Log, continue | Comment not synced (retry later) |
+| User directory missing | `EnsureUserDir` creates it | Transparent to user |
 
 ## Concurrency Model
-
-### Thread Safety
-
-1. **Session Manager**
-   - Uses `sync.RWMutex` for store access
-   - Read lock for queries
-   - Write lock for modifications
-
-2. **Bridge Cache**
-   - Uses `sync.RWMutex` for bridge map
-   - Read lock for lookups
-   - Write lock for add/remove
-
-3. **Streamer**
-   - Uses `sync.Mutex` for state
-   - Protects started/completed flags
-   - Prevents concurrent updates
-
-4. **Output Buffer**
-   - Uses `sync.Mutex` for content
-   - Thread-safe Append()
-   - Timer safety with proper cancellation
 
 ### Goroutine Architecture
 
@@ -735,99 +547,124 @@ Main Goroutine
     │
     ├──▶ Socket Mode Event Loop (1 goroutine)
     │        │
-    │        └──▶ Per-event handler (N goroutines, async)
-    │                │
-    │                └──▶ processMessage() for each message
+    │        └──▶ Per-event handler (async, N goroutines)
     │
-    ├──▶ Cleanup Loop (1 goroutine)
+    ├──▶ Worker Pool (N goroutines, configurable)
     │        │
-    │        └──▶ Runs every 5 minutes
+    │        └──▶ Each worker processes tasks sequentially
+    │
+    ├──▶ Poller (1 goroutine)
+    │        │
+    │        └──▶ Polls every poll_interval
+    │
+    ├──▶ Comment Syncer (1 goroutine)
+    │        │
+    │        └──▶ Syncs every sync_interval
     │
     └──▶ Signal Handler (1 goroutine)
              │
              └──▶ Graceful shutdown on SIGTERM/SIGINT
 ```
 
-### Message Processing Concurrency
+### Thread Safety
 
-Each message is processed in its own goroutine:
+| Component | Synchronization |
+|-----------|-----------------|
+| TaskQueue | Go channels (inherently safe) |
+| SyncTracker | `sync.RWMutex` |
+| WorkerPool | Context cancellation |
+| BeadsManager | Stateless (each call is independent) |
+
+### Graceful Shutdown
+
 ```go
-go func() {
-    ctx := context.Background()
-    if err := h.messageHandler(ctx, msg); err != nil {
-        logger.Error("failed to process message", zap.Error(err))
-    }
-}()
+// In main.go
+ctx, cancel := context.WithCancel(context.Background())
+
+// Start services
+go workerPool.Start(ctx)
+go poller.Start(ctx)
+go syncer.StartSyncLoop(ctx, interval)
+
+// On SIGTERM/SIGINT:
+cancel()              // Signal all goroutines
+workerPool.Stop()     // Wait for workers to finish
+taskQueue.Close()     // Release blocked readers
+time.Sleep(500ms)     // Allow cleanup
 ```
 
-**Benefits**:
-- Multiple users can interact concurrently
-- One slow response doesn't block others
-- Natural load distribution
+## Configuration
 
-**Considerations**:
-- Session limits prevent resource exhaustion
-- Each session has its own Kiro process (isolated)
-- Slack API rate limits apply globally
+### Worker Configuration
+
+```yaml
+worker:
+  pool_size: 3           # Number of concurrent workers
+  poll_interval: 10s     # How often to poll bd ready
+  task_timeout: 5m       # Max time for kiro-cli execution
+  max_retries: 2         # Retry count on failure
+  retry_backoff: 30s     # Wait between retries
+```
+
+### Sync Configuration
+
+```yaml
+sync:
+  sync_interval: 5s      # How often to sync comments
+  enabled: true          # Enable/disable comment sync
+```
+
+### Beads Configuration
+
+```yaml
+beads:
+  sessions_base_path: "/var/kiro-agent/sessions"  # Base path for user dirs
+  issue_prefix: "slack"                            # Prefix for issue IDs
+  context_max_messages: 20                         # Max messages in context
+```
+
+### Kiro Configuration
+
+```yaml
+kiro:
+  binary_path: "kiro-cli"                    # Path to kiro-cli
+  response_timeout: 120s                     # Timeout for CLI execution
+```
 
 ## Performance Characteristics
 
 ### Latency
 
-- **Slack → Handler**: <100ms (Socket Mode)
-- **Session Lookup**: <5ms (SQLite indexed)
-- **Kiro Startup**: 1-3s (first message in thread)
-- **Response Time**: 5-120s (depends on query complexity)
-- **Streaming Update**: 500ms debounce + API latency
+| Operation | Expected Latency |
+|-----------|------------------|
+| Slack → Handler | <100ms (Socket Mode) |
+| Feature/Task Creation | <500ms (bd create) |
+| Poll Interval | 10s (configurable) |
+| AI Response | 5-120s (depends on query) |
+| Comment Sync | <5s after response |
 
 ### Resource Usage
 
-- **Memory**: ~10MB base + ~5MB per active session
-- **Disk**: ~1MB per session directory
-- **CPU**: Low (mostly I/O bound)
-- **Database Size**: ~1KB per session
+| Resource | Usage |
+|----------|-------|
+| Memory | ~10MB base + ~5MB per worker |
+| CPU | Low (mostly I/O bound) |
+| Disk | ~1KB per issue in beads |
+| Processes | 1 kiro-cli per active worker |
 
-### Scaling Limits
+### Scaling
 
-- **Sessions**: Configurable (default 100 total, 5 per user)
-- **Kiro Processes**: One per active session
-- **Slack Connections**: Single Socket Mode connection
-- **Database**: SQLite (suitable for 1000s of sessions)
+| Component | Scaling Strategy |
+|-----------|------------------|
+| Workers | Increase `pool_size` |
+| Users | Add more user directories |
+| Issues | Beads handles 1000s of issues |
+| Slack | Single Socket Mode connection |
 
 For higher scale:
-- Use PostgreSQL instead of SQLite
-- Deploy multiple instances (stateless design)
-- Add load balancer for Socket Mode connections
-- Implement distributed session store (Redis)
-
-## Future Enhancements
-
-### Potential Improvements
-
-1. **Web Observer**
-   - WebSocket-based terminal observation
-   - xterm.js frontend for real-time PTY viewing
-   - Multi-user observation support
-
-2. **Session Sharing**
-   - Allow multiple users to join a session
-   - Collaborative AI interactions
-   - Permission management
-
-3. **Rich Media**
-   - Image generation and display
-   - File uploads and downloads
-   - Code execution results
-
-4. **Analytics**
-   - Usage metrics per user/channel
-   - Response time tracking
-   - Error rate monitoring
-
-5. **Advanced Routing**
-   - Multiple Kiro agents (different models)
-   - Route by channel/user/keywords
-   - Fallback strategies
+- Deploy multiple instances behind load balancer
+- Use shared storage for beads directories
+- Consider message queue (SQS, Redis) instead of channels
 
 ## Troubleshooting
 
@@ -839,39 +676,44 @@ logging:
   format: "console"
 ```
 
-### Inspect Sessions
+### Check Beads State
 
 ```bash
-sqlite3 /tmp/kiro-agent/sessions.db
-> SELECT * FROM sessions;
-> SELECT * FROM sessions WHERE last_activity < strftime('%s', 'now') - 1800;
-```
+# List all issues
+cd /var/kiro-agent/sessions/<user-id>
+bd list
 
-### Monitor PTY Output
+# Show issue details
+bd show <issue-id> --json
 
-Add logging to `internal/kiro/process.go`:
-```go
-p.logger.Debug("pty output", zap.String("raw", string(buf[:n])))
+# Check ready tasks
+bd ready --json
 ```
 
 ### Test Kiro CLI Standalone
 
 ```bash
-cd /tmp/kiro-sessions/test-session
-kiro-cli
-> help
+cd /var/kiro-agent/sessions/<user-id>
+kiro-cli chat --agent --trust-all-tools --no-interactive "hello"
 ```
 
-### Verify Slack Permissions
+### Monitor Worker Pool
 
-```bash
-curl -H "Authorization: Bearer xoxb-..." \
-  https://slack.com/api/auth.test
-```
+Check logs for:
+- `worker started` / `worker stopped`
+- `processing task` / `task completed`
+- `task failed` / `retrying task`
+
+### Verify Slack Connection
+
+Check logs for:
+- `connected to Slack`
+- `Socket Mode connected`
+- `handling app_mention` / `handling message`
 
 ## References
 
 - [Slack Socket Mode Documentation](https://api.slack.com/apis/connections/socket)
 - [slack-go/slack Library](https://github.com/slack-go/slack)
-- [creack/pty Library](https://github.com/creack/pty)
+- [Beads Issue Tracker](https://github.com/beads-cli/beads)
 - [Kiro CLI Documentation](https://github.com/kiro-cli)

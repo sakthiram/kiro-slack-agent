@@ -193,6 +193,46 @@ func (m *mockBeadsManager) GetConversationContext(ctx context.Context, userID, i
 	return m.contextMessages, nil
 }
 
+func (m *mockBeadsManager) CreateFeature(ctx context.Context, userID string, thread *beads.ThreadInfo, title, description string) (*beads.Issue, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.createIssueError != nil {
+		return nil, m.createIssueError
+	}
+
+	key := userID + ":" + thread.ThreadTS
+	issue := &beads.Issue{
+		ID:          "feature-" + thread.ThreadTS,
+		Title:       title,
+		Description: description,
+		Type:        "feature",
+		Labels:      thread.Labels(),
+	}
+	m.issues[key] = issue
+	return issue, nil
+}
+
+func (m *mockBeadsManager) CreateTask(ctx context.Context, userID, parentID string, thread *beads.ThreadInfo, title string) (*beads.Issue, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.createIssueError != nil {
+		return nil, m.createIssueError
+	}
+
+	key := userID + ":" + thread.ThreadTS
+	issue := &beads.Issue{
+		ID:       "task-" + thread.ThreadTS,
+		Title:    title,
+		Type:     "task",
+		ParentID: parentID,
+		Labels:   thread.Labels(),
+	}
+	m.issues[key] = issue
+	return issue, nil
+}
+
 func TestNewMessageProcessor(t *testing.T) {
 	client := newMockSlackClient()
 	beadsMgr := newMockBeadsManager()

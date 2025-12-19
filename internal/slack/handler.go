@@ -13,20 +13,37 @@ import (
 // MessageHandler is the callback for processing messages.
 type MessageHandler func(ctx context.Context, msg *MessageEvent) error
 
+// FeatureProcessor handles async feature and task processing.
+type FeatureProcessor interface {
+	ProcessMainPost(ctx context.Context, msg *MessageEvent) error
+	ProcessThreadReply(ctx context.Context, msg *MessageEvent) error
+}
+
 // Handler handles Slack Socket Mode events.
 type Handler struct {
-	client         *Client
-	messageHandler MessageHandler
-	logger         *zap.Logger
-	syncMode       bool // When true, process messages synchronously
+	client           *Client
+	messageHandler   MessageHandler    // Legacy synchronous handler (deprecated)
+	featureProcessor FeatureProcessor  // New async feature processor
+	logger           *zap.Logger
+	syncMode         bool              // When true, process messages synchronously
 }
 
 // NewHandler creates a new event handler.
+// The messageHandler parameter is deprecated - use NewHandlerWithFeatureProcessor instead.
 func NewHandler(client *Client, messageHandler MessageHandler, logger *zap.Logger) *Handler {
 	return &Handler{
 		client:         client,
 		messageHandler: messageHandler,
 		logger:         logger,
+	}
+}
+
+// NewHandlerWithFeatureProcessor creates a new event handler with async feature processing.
+func NewHandlerWithFeatureProcessor(client *Client, featureProcessor FeatureProcessor, logger *zap.Logger) *Handler {
+	return &Handler{
+		client:           client,
+		featureProcessor: featureProcessor,
+		logger:           logger,
 	}
 }
 
@@ -127,6 +144,18 @@ func (h *Handler) handleAppMention(ev *slackevents.AppMentionEvent) {
 
 	msg := ParseAppMention(ev, h.client.GetBotUserID())
 
+	// Route to feature processor if available
+	if h.featureProcessor != nil {
+		h.handleWithFeatureProcessor(msg, logger)
+		return
+	}
+
+	// Fallback to legacy message handler
+	if h.messageHandler == nil {
+		logger.Warn("no message handler or feature processor configured")
+		return
+	}
+
 	if h.syncMode {
 		// Process synchronously for tests
 		ctx := context.Background()
@@ -171,6 +200,18 @@ func (h *Handler) handleMessage(ev *slackevents.MessageEvent) {
 
 	msg := ParseDirectMessage(ev)
 
+	// Route to feature processor if available
+	if h.featureProcessor != nil {
+		h.handleWithFeatureProcessor(msg, logger)
+		return
+	}
+
+	// Fallback to legacy message handler
+	if h.messageHandler == nil {
+		logger.Warn("no message handler or feature processor configured")
+		return
+	}
+
 	if h.syncMode {
 		// Process synchronously for tests
 		ctx := context.Background()
@@ -186,6 +227,59 @@ func (h *Handler) handleMessage(ev *slackevents.MessageEvent) {
 			}
 		}()
 	}
+}
+
+// handleWithFeatureProcessor routes messages to the async feature processor.
+func (h *Handler) handleWithFeatureProcessor(msg *MessageEvent, logger *zap.Logger) {
+	ctx := context.Background()
+
+	// Determine if this is a main post or thread reply
+	isMainPost := msg.ThreadTS == "" || msg.ThreadTS == msg.MessageTS
+
+	// Process async in goroutine
+	go func() {
+		var err error
+		var ackMessage string
+
+		if isMainPost {
+			// Main post - create Feature issue
+			logger.Info("routing to ProcessMainPost")
+			err = h.featureProcessor.ProcessMainPost(ctx, msg)
+			ackMessage = "📝 Received! Working on it..."
+		} else {
+			// Thread reply - create Task issue
+			logger.Info("routing to ProcessThreadReply")
+			err = h.featureProcessor.ProcessThreadReply(ctx, msg)
+			ackMessage = "👍 Got it! Processing..."
+		}
+
+		if err != nil {
+			logger.Error("feature processor error", zap.Error(err), zap.Bool("is_main_post", isMainPost))
+			// Post error message to Slack
+			errMsg := "❌ Sorry, I encountered an error processing your message."
+			if msg.ThreadTS != "" {
+				_, _ = h.client.PostMessage(ctx, msg.ChannelID, errMsg, WithThreadTS(msg.ThreadTS))
+			} else {
+				_, _ = h.client.PostMessage(ctx, msg.ChannelID, errMsg)
+			}
+			return
+		}
+
+		// Post acknowledgment message
+		if msg.ThreadTS != "" && !isMainPost {
+			// Reply in thread for thread replies
+			if _, err := h.client.PostMessage(ctx, msg.ChannelID, ackMessage, WithThreadTS(msg.ThreadTS)); err != nil {
+				logger.Error("failed to post acknowledgment", zap.Error(err))
+			}
+		} else {
+			// Post in channel for main posts
+			if _, err := h.client.PostMessage(ctx, msg.ChannelID, ackMessage); err != nil {
+				logger.Error("failed to post acknowledgment", zap.Error(err))
+			}
+		}
+
+		logger.Info("feature processing initiated", zap.Bool("is_main_post", isMainPost))
+	}()
 }
 
 // NewSocketModeClient creates a new Socket Mode client.

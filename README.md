@@ -10,13 +10,12 @@ Amelia Slack Agent provides a seamless interface between Slack and the Kiro CLI,
 
 - **Direct Message Support**: Send DMs to the bot for private interactions
 - **@Mention Support**: Mention the bot in channels to get help
-- **Thread-Based Sessions**: Each thread maintains an independent Kiro CLI session with full context
-- **Streaming Responses**: Real-time progressive message updates as the agent responds
-- **Session Persistence**: SQLite-backed session storage survives restarts
-- **Automatic Cleanup**: Idle sessions are automatically cleaned up after configurable timeout
+- **Thread-Based Conversations**: Each thread maintains context via beads issue tracking
+- **Async Processing**: Messages are queued and processed by a worker pool for scalability
+- **Issue-Driven Context**: Conversation history stored in beads (bd) for persistence
+- **Comment Sync**: Agent responses automatically sync from beads to Slack threads
 - **Retry Logic**: Automatic retry on Kiro CLI failures for reliability
-- **PTY-Based Integration**: Full terminal integration with Kiro CLI for rich interactions
-- **Web Terminal Observer**: Watch agent sessions in real-time via browser (tmux-like experience)
+- **Non-Interactive Execution**: Uses `kiro-cli --no-interactive` for simple, robust integration
 
 ## Prerequisites
 
@@ -221,6 +220,25 @@ streaming:
   update_interval: "500ms"      # Debounce interval for Slack message updates
 ```
 
+#### Worker Pool
+
+```yaml
+worker:
+  pool_size: 3                  # Number of concurrent workers
+  poll_interval: "10s"          # How often to poll bd ready
+  task_timeout: "5m"            # Max time for kiro-cli execution
+  max_retries: 2                # Retry count on failure
+  retry_backoff: "30s"          # Wait between retries
+```
+
+#### Comment Sync
+
+```yaml
+sync:
+  sync_interval: "5s"           # How often to sync comments to Slack
+  enabled: true                 # Enable/disable comment sync
+```
+
 #### Logging
 
 ```yaml
@@ -266,21 +284,29 @@ amelia-slack-agent/
 │   ├── logging/          # Logging setup
 │   ├── slack/            # Slack API integration
 │   │   ├── client.go     # Slack API wrapper
-│   │   ├── handler.go    # Event handlers
+│   │   ├── handler.go    # Event handlers (routes to feature processor)
 │   │   └── message.go    # Message parsing and formatting
-│   ├── session/          # Session management
-│   │   ├── manager.go    # Session lifecycle
-│   │   ├── session.go    # Session entity
-│   │   ├── store.go      # Store interface
-│   │   └── sqlite_store.go  # SQLite persistence
-│   ├── kiro/            # Kiro CLI integration
-│   │   ├── bridge.go    # Bridge interface
-│   │   ├── process.go   # PTY process management
-│   │   ├── retry_bridge.go  # Retry wrapper
-│   │   └── output_parser.go # ANSI cleanup and parsing
-│   └── streaming/       # Streaming updates
-│       ├── streamer.go  # Message updater
-│       └── buffer.go    # Debounced buffer
+│   ├── beads/            # Beads (bd) issue tracking integration
+│   │   ├── manager.go    # BD CLI wrapper for issue CRUD
+│   │   └── types.go      # Issue, Comment, ThreadInfo types
+│   ├── processor/        # Message processing
+│   │   ├── feature_processor.go  # Creates Feature/Task issues
+│   │   └── message_processor.go  # Legacy synchronous processor
+│   ├── queue/            # Task queue system
+│   │   ├── queue.go      # Channel-based task queue
+│   │   ├── poller.go     # Polls bd ready for tasks
+│   │   └── types.go      # TaskWork, TaskResult types
+│   ├── worker/           # Worker pool for async processing
+│   │   ├── pool.go       # Worker pool management
+│   │   ├── worker.go     # Individual worker logic
+│   │   └── runner.go     # KiroRunner (non-interactive CLI)
+│   ├── sync/             # Comment synchronization
+│   │   ├── syncer.go     # Beads → Slack comment sync
+│   │   └── tracker.go    # Sync state tracking
+│   ├── kiro/             # Kiro CLI integration (legacy PTY)
+│   │   └── ...           # Bridge, process, parser (deprecated)
+│   └── streaming/        # Streaming updates (legacy)
+│       └── ...           # Streamer, buffer
 ├── configs/             # Configuration files
 ├── docs/               # Documentation
 └── Makefile           # Build and development commands
@@ -418,21 +444,28 @@ The `ObservableProcess` wraps the standard Kiro PTY process and broadcasts outpu
 
 ## Architecture
 
-For detailed architecture documentation including component descriptions, message flow, and session lifecycle, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+For detailed architecture documentation including component descriptions, message flow, and task processing, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ### High-Level Flow
 
 ```
-User Message → Slack → Socket Mode → Handler → Session Manager
+User Message → Slack → Socket Mode → Handler → Feature Processor
                                                       ↓
-                                                 Get/Create Session
+                                              Create Feature/Task
+                                              in Beads (bd)
                                                       ↓
-                                         Kiro Bridge (PTY) → kiro-cli
+                                         Poller (bd ready) → Task Queue
                                                       ↓
-                                         Stream Response ← Output Parser
+                                              Worker Pool
                                                       ↓
-                                         Streamer → Slack Message Updates
+                                         kiro-cli --no-interactive
+                                                      ↓
+                                         Add [agent] comment to beads
+                                                      ↓
+                                         Comment Syncer → Slack Thread
 ```
+
+The architecture is **fully async**: the Slack handler returns immediately after creating the beads issue, and the response arrives via the comment sync loop.
 
 ## Contributing
 

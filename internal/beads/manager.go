@@ -14,6 +14,30 @@ import (
 	"go.uber.org/zap"
 )
 
+// bdBinaryPath is the full path to the bd command.
+// Needed because Go's exec.CommandContext may not inherit shell PATH.
+var bdBinaryPath = findBdBinary()
+
+// findBdBinary locates the bd binary, checking common paths.
+func findBdBinary() string {
+	// First try PATH
+	if path, err := exec.LookPath("bd"); err == nil {
+		return path
+	}
+	// Check common homebrew locations
+	commonPaths := []string{
+		"/opt/homebrew/bin/bd",
+		"/usr/local/bin/bd",
+	}
+	for _, p := range commonPaths {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	// Fallback to just "bd" and hope it's in PATH
+	return "bd"
+}
+
 // Manager handles per-user beads database operations for tracking Slack thread conversations.
 type Manager struct {
 	sessionsBasePath   string
@@ -26,6 +50,11 @@ type Manager struct {
 
 // NewManager creates a new beads manager.
 func NewManager(cfg *config.BeadsConfig, logger *zap.Logger) *Manager {
+	logger.Info("beads manager initialized",
+		zap.String("bd_binary", bdBinaryPath),
+		zap.String("sessions_base", cfg.SessionsBasePath),
+		zap.String("issue_prefix", cfg.IssuePrefix),
+	)
 	return &Manager{
 		sessionsBasePath:   cfg.SessionsBasePath,
 		issuePrefix:        cfg.IssuePrefix,
@@ -62,7 +91,7 @@ func (m *Manager) EnsureUserDir(ctx context.Context, userID string) (string, err
 	}
 
 	// Initialize beads with bd init
-	cmd := exec.CommandContext(ctx, "bd", "init", "--prefix", m.issuePrefix+"-"+userID)
+	cmd := exec.CommandContext(ctx, bdBinaryPath, "init", "--prefix", m.issuePrefix+"-"+userID)
 	cmd.Dir = userDir
 
 	output, err := cmd.CombinedOutput()
@@ -96,7 +125,7 @@ func (m *Manager) FindThreadIssue(ctx context.Context, userID string, thread *Th
 
 	// Use bd list with label filter to find the issue
 	// bd list --label thread:<ts> --json
-	cmd := exec.CommandContext(ctx, "bd", "list",
+	cmd := exec.CommandContext(ctx, bdBinaryPath, "list",
 		"--label", "thread:"+thread.ThreadTS,
 		"--json",
 	)
@@ -145,7 +174,7 @@ func (m *Manager) CreateThreadIssue(ctx context.Context, userID string, thread *
 	labels := strings.Join(thread.Labels(), ",")
 
 	// Create issue with bd create
-	cmd := exec.CommandContext(ctx, "bd", "create",
+	cmd := exec.CommandContext(ctx, bdBinaryPath, "create",
 		title,
 		"-t", "task",
 		"-p", "2",
@@ -189,7 +218,7 @@ func (m *Manager) UpdateThreadIssue(ctx context.Context, userID, issueID, role, 
 	comment := fmt.Sprintf("[%s] %s", role, message)
 
 	// Add comment with bd comment
-	cmd := exec.CommandContext(ctx, "bd", "comment", issueID, comment)
+	cmd := exec.CommandContext(ctx, bdBinaryPath, "comment", issueID, comment)
 	cmd.Dir = userDir
 
 	output, err := cmd.CombinedOutput()
@@ -212,7 +241,7 @@ func (m *Manager) GetConversationContext(ctx context.Context, userID, issueID st
 	userDir := m.GetUserDir(userID)
 
 	// Get issue details with comments using bd show
-	cmd := exec.CommandContext(ctx, "bd", "show", issueID, "--json")
+	cmd := exec.CommandContext(ctx, bdBinaryPath, "show", issueID, "--json")
 	cmd.Dir = userDir
 
 	output, err := cmd.Output()
@@ -277,7 +306,7 @@ func parseComment(comment Comment) Message {
 func (m *Manager) CloseThreadIssue(ctx context.Context, userID, issueID, reason string) error {
 	userDir := m.GetUserDir(userID)
 
-	cmd := exec.CommandContext(ctx, "bd", "close", issueID, "--reason", reason)
+	cmd := exec.CommandContext(ctx, bdBinaryPath, "close", issueID, "--reason", reason)
 	cmd.Dir = userDir
 
 	output, err := cmd.CombinedOutput()
@@ -292,4 +321,235 @@ func (m *Manager) CloseThreadIssue(ctx context.Context, userID, issueID, reason 
 	}
 
 	return nil
+}
+
+// ListUserDirs lists all user session directories by scanning sessionsBasePath.
+// Returns a list of user IDs that have been initialized.
+func (m *Manager) ListUserDirs() []string {
+	entries, err := os.ReadDir(m.sessionsBasePath)
+	if err != nil {
+		m.logger.Error("failed to read sessions directory",
+			zap.String("path", m.sessionsBasePath),
+			zap.Error(err),
+		)
+		return []string{}
+	}
+
+	var userIDs []string
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+
+		// Check if .beads directory exists for this user
+		beadsDir := filepath.Join(m.sessionsBasePath, entry.Name(), ".beads")
+		if _, err := os.Stat(beadsDir); err == nil {
+			userIDs = append(userIDs, entry.Name())
+		}
+	}
+
+	return userIDs
+}
+
+// GetReadyTasks runs `bd ready --json` in the user directory and returns tasks ready for processing.
+func (m *Manager) GetReadyTasks(ctx context.Context, userID string) ([]ReadyTask, error) {
+	userDir := m.GetUserDir(userID)
+
+	cmd := exec.CommandContext(ctx, bdBinaryPath, "ready", "--json")
+	cmd.Dir = userDir
+
+	output, err := cmd.Output()
+	if err != nil {
+		// No ready tasks is not an error
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			if exitErr.ExitCode() == 1 {
+				return []ReadyTask{}, nil
+			}
+		}
+		return nil, fmt.Errorf("failed to get ready tasks: %w", err)
+	}
+
+	// Parse JSON output
+	var issues []Issue
+	if err := json.Unmarshal(output, &issues); err != nil {
+		// Try parsing as empty result
+		if strings.TrimSpace(string(output)) == "[]" || strings.TrimSpace(string(output)) == "" {
+			return []ReadyTask{}, nil
+		}
+		return nil, fmt.Errorf("failed to parse ready tasks: %w", err)
+	}
+
+	// Convert to ReadyTask
+	tasks := make([]ReadyTask, len(issues))
+	for i, issue := range issues {
+		tasks[i] = ReadyTask{
+			Issue:  issue,
+			UserID: userID,
+		}
+	}
+
+	return tasks, nil
+}
+
+// UpdateTaskStatus runs `bd update <id> --status <status>` to update a task's status.
+func (m *Manager) UpdateTaskStatus(ctx context.Context, userID, issueID, status string) error {
+	userDir := m.GetUserDir(userID)
+
+	cmd := exec.CommandContext(ctx, bdBinaryPath, "update", issueID, "--status", status)
+	cmd.Dir = userDir
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		m.logger.Error("failed to update task status",
+			zap.String("user_id", userID),
+			zap.String("issue_id", issueID),
+			zap.String("status", status),
+			zap.String("output", string(output)),
+			zap.Error(err),
+		)
+		return fmt.Errorf("failed to update task status: %w", err)
+	}
+
+	return nil
+}
+
+// CreateFeature runs `bd create -t feature` to create a new feature issue.
+func (m *Manager) CreateFeature(ctx context.Context, userID string, thread *ThreadInfo, title, desc string) (*Issue, error) {
+	userDir := m.GetUserDir(userID)
+
+	// Build labels argument
+	labels := strings.Join(thread.Labels(), ",")
+
+	// Create feature with bd create
+	args := []string{"create", title, "-t", "feature", "--json"}
+	if desc != "" {
+		args = append(args, "-d", desc)
+	}
+	if labels != "" {
+		args = append(args, "-l", labels)
+	}
+
+	cmd := exec.CommandContext(ctx, bdBinaryPath, args...)
+	cmd.Dir = userDir
+
+	output, err := cmd.Output()
+	if err != nil {
+		m.logger.Error("failed to create feature",
+			zap.String("user_id", userID),
+			zap.String("title", title),
+			zap.Error(err),
+		)
+		return nil, fmt.Errorf("failed to create feature: %w", err)
+	}
+
+	// Parse JSON output to get issue
+	var issue Issue
+	if err := json.Unmarshal(output, &issue); err != nil {
+		// Try to extract ID from output string
+		m.logger.Debug("created feature", zap.String("output", string(output)))
+		issue.ID = strings.TrimSpace(string(output))
+	}
+
+	m.logger.Info("created feature",
+		zap.String("user_id", userID),
+		zap.String("issue_id", issue.ID),
+		zap.String("title", title),
+	)
+
+	return &issue, nil
+}
+
+// CreateTask runs `bd create -t task --parent <parentID>` to create a new task under a parent feature.
+func (m *Manager) CreateTask(ctx context.Context, userID, parentID string, thread *ThreadInfo, title string) (*Issue, error) {
+	userDir := m.GetUserDir(userID)
+
+	// Build labels argument
+	labels := strings.Join(thread.Labels(), ",")
+
+	// Create task with bd create
+	args := []string{"create", title, "-t", "task", "--parent", parentID, "--json"}
+	if labels != "" {
+		args = append(args, "-l", labels)
+	}
+
+	cmd := exec.CommandContext(ctx, bdBinaryPath, args...)
+	cmd.Dir = userDir
+
+	output, err := cmd.Output()
+	if err != nil {
+		m.logger.Error("failed to create task",
+			zap.String("user_id", userID),
+			zap.String("parent_id", parentID),
+			zap.String("title", title),
+			zap.Error(err),
+		)
+		return nil, fmt.Errorf("failed to create task: %w", err)
+	}
+
+	// Parse JSON output to get issue
+	var issue Issue
+	if err := json.Unmarshal(output, &issue); err != nil {
+		// Try to extract ID from output string
+		m.logger.Debug("created task", zap.String("output", string(output)))
+		issue.ID = strings.TrimSpace(string(output))
+	}
+
+	m.logger.Info("created task",
+		zap.String("user_id", userID),
+		zap.String("parent_id", parentID),
+		zap.String("issue_id", issue.ID),
+		zap.String("title", title),
+	)
+
+	return &issue, nil
+}
+
+// AddAgentComment runs `bd comment` with [agent] prefix to add an agent comment to an issue.
+func (m *Manager) AddAgentComment(ctx context.Context, userID, issueID, content string) error {
+	userDir := m.GetUserDir(userID)
+
+	// Format the comment with [agent] prefix
+	comment := fmt.Sprintf("[agent] %s", content)
+
+	// Add comment with bd comment
+	cmd := exec.CommandContext(ctx, bdBinaryPath, "comment", issueID, comment)
+	cmd.Dir = userDir
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		m.logger.Error("failed to add agent comment",
+			zap.String("user_id", userID),
+			zap.String("issue_id", issueID),
+			zap.String("output", string(output)),
+			zap.Error(err),
+		)
+		return fmt.Errorf("failed to add agent comment: %w", err)
+	}
+
+	return nil
+}
+
+// GetIssue runs `bd show <id> --json` to retrieve an issue with all its details.
+func (m *Manager) GetIssue(ctx context.Context, userID, issueID string) (*Issue, error) {
+	userDir := m.GetUserDir(userID)
+
+	cmd := exec.CommandContext(ctx, bdBinaryPath, "show", issueID, "--json")
+	cmd.Dir = userDir
+
+	output, err := cmd.Output()
+	if err != nil {
+		m.logger.Error("failed to get issue",
+			zap.String("user_id", userID),
+			zap.String("issue_id", issueID),
+			zap.Error(err),
+		)
+		return nil, fmt.Errorf("failed to get issue: %w", err)
+	}
+
+	var issue Issue
+	if err := json.Unmarshal(output, &issue); err != nil {
+		return nil, fmt.Errorf("failed to parse issue: %w", err)
+	}
+
+	return &issue, nil
 }

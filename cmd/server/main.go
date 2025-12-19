@@ -6,12 +6,16 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/sakthiram/kiro-slack-agent/internal/beads"
 	"github.com/sakthiram/kiro-slack-agent/internal/config"
 	"github.com/sakthiram/kiro-slack-agent/internal/logging"
 	"github.com/sakthiram/kiro-slack-agent/internal/processor"
+	"github.com/sakthiram/kiro-slack-agent/internal/queue"
 	"github.com/sakthiram/kiro-slack-agent/internal/slack"
+	syncpkg "github.com/sakthiram/kiro-slack-agent/internal/sync"
+	"github.com/sakthiram/kiro-slack-agent/internal/worker"
 	"go.uber.org/zap"
 )
 
@@ -51,26 +55,48 @@ func main() {
 		logger.Fatal("failed to create slack client", zap.Error(err))
 	}
 
-	// 5. Create message processor (no bridge cache - fresh process per message)
-	messageProcessor := processor.NewMessageProcessor(slackClient, beadsMgr, cfg, logger)
+	// 5. Initialize async components
+	// Task queue for holding bd issues ready to process
+	taskQueue := queue.NewTaskQueue(100, 3) // capacity=100, maxRetries=3
 
-	// 6. Create message handler that wires everything together
-	messageHandler := func(ctx context.Context, msg *slack.MessageEvent) error {
-		return messageProcessor.ProcessMessage(ctx, msg)
+	// Comment syncer for propagating Kiro responses back to Slack
+	syncer := syncpkg.NewCommentSyncer(beadsMgr, slackClient, logger)
+
+	// Feature processor routes Slack messages to bd (Feature or Task creation)
+	featureProcessor := processor.NewFeatureProcessor(beadsMgr, syncer, slackClient, cfg, logger)
+
+	// Worker pool for executing Kiro on ready tasks
+	workerPool := worker.NewWorkerPool(taskQueue, beadsMgr, syncer, &cfg.Worker, &cfg.Kiro, logger)
+
+	// Poller checks for bd issues in "ready" state and enqueues them
+	poller := queue.NewPoller(taskQueue, beadsMgr, cfg.Beads.SessionsBasePath, cfg.Worker.PollInterval, logger)
+
+	// 6. Create Slack handler with feature processor
+	handler := slack.NewHandlerWithFeatureProcessor(slackClient, featureProcessor, logger)
+
+	// 7. Setup context with cancellation
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// 8. Start async services before Slack handler
+	go workerPool.Start(ctx)
+	go poller.Start(ctx)
+	if cfg.Sync.Enabled {
+		go syncer.StartSyncLoop(ctx, cfg.Sync.SyncInterval)
 	}
 
-	// 7. Create Slack handler
-	handler := slack.NewHandler(slackClient, messageHandler, logger)
+	logger.Info("async services started",
+		zap.Int("worker_pool_size", cfg.Worker.PoolSize),
+		zap.Duration("poll_interval", cfg.Worker.PollInterval),
+		zap.Bool("sync_enabled", cfg.Sync.Enabled),
+	)
 
-	// 8. Setup Socket Mode
+	// 9. Setup Socket Mode
 	api := slack.NewSlackAPI(cfg.Slack.BotToken, cfg.Slack.AppToken, cfg.Slack.DebugMode)
 	socketClient := slack.NewSocketModeClient(api, cfg.Slack.DebugMode)
 	handler.RegisterHandlers(socketClient)
 
-	// 9. Handle shutdown gracefully
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
+	// 10. Handle shutdown gracefully
 	go func() {
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -79,7 +105,7 @@ func main() {
 		cancel()
 	}()
 
-	// 10. Run Socket Mode
+	// 11. Run Socket Mode
 	logger.Info("connected, listening for events...")
 	errChan := make(chan error, 1)
 	slack.StartSocketMode(socketClient, errChan)
@@ -87,6 +113,12 @@ func main() {
 	select {
 	case <-ctx.Done():
 		logger.Info("shutting down...")
+		// Graceful shutdown: stop worker pool and close task queue
+		workerPool.Stop()
+		taskQueue.Close()
+		// Give services time to cleanup
+		time.Sleep(500 * time.Millisecond)
+		logger.Info("shutdown complete")
 	case err := <-errChan:
 		logger.Fatal("socket mode error", zap.Error(err))
 	}

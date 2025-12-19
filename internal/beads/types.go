@@ -8,10 +8,19 @@ type Issue struct {
 	Title       string    `json:"title"`
 	Description string    `json:"description"`
 	Status      string    `json:"status"`
+	Priority    int       `json:"priority"`
+	Type        string    `json:"type"`
+	ParentID    string    `json:"parent_id,omitempty"`
 	Labels      []string  `json:"labels"`
 	Comments    []Comment `json:"comments"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+// ReadyTask represents a task ready for processing from `bd ready`.
+type ReadyTask struct {
+	Issue
+	UserID string // Extracted from labels for context
 }
 
 // Comment represents a comment on an issue.
