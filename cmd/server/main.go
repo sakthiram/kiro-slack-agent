@@ -78,7 +78,15 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// 8. Start async services before Slack handler
+	// 8. Restore syncer state from beads on startup
+	if cfg.Sync.Enabled {
+		if err := syncer.Restore(ctx); err != nil {
+			logger.Error("failed to restore syncer state", zap.Error(err))
+			// Don't fail startup, just log the error
+		}
+	}
+
+	// 9. Start async services before Slack handler
 	go workerPool.Start(ctx)
 	go poller.Start(ctx)
 	if cfg.Sync.Enabled {
@@ -91,12 +99,12 @@ func main() {
 		zap.Bool("sync_enabled", cfg.Sync.Enabled),
 	)
 
-	// 9. Setup Socket Mode
+	// 10. Setup Socket Mode
 	api := slack.NewSlackAPI(cfg.Slack.BotToken, cfg.Slack.AppToken, cfg.Slack.DebugMode)
 	socketClient := slack.NewSocketModeClient(api, cfg.Slack.DebugMode)
 	handler.RegisterHandlers(socketClient)
 
-	// 10. Handle shutdown gracefully
+	// 11. Handle shutdown gracefully
 	go func() {
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -105,7 +113,7 @@ func main() {
 		cancel()
 	}()
 
-	// 11. Run Socket Mode
+	// 12. Run Socket Mode
 	logger.Info("connected, listening for events...")
 	errChan := make(chan error, 1)
 	slack.StartSocketMode(socketClient, errChan)

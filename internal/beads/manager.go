@@ -553,3 +553,107 @@ func (m *Manager) GetIssue(ctx context.Context, userID, issueID string) (*Issue,
 
 	return &issue, nil
 }
+
+// AddLabel runs `bd update <id> --add-label <label>` to add a label to an issue.
+// Used to mark comments as synced: synced:<comment_id>
+func (m *Manager) AddLabel(ctx context.Context, userID, issueID, label string) error {
+	userDir := m.GetUserDir(userID)
+
+	cmd := exec.CommandContext(ctx, bdBinaryPath, "update", issueID, "--add-label", label)
+	cmd.Dir = userDir
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		m.logger.Error("failed to add label",
+			zap.String("user_id", userID),
+			zap.String("issue_id", issueID),
+			zap.String("label", label),
+			zap.String("output", string(output)),
+			zap.Error(err),
+		)
+		return fmt.Errorf("failed to add label: %w", err)
+	}
+
+	return nil
+}
+
+// HasLabel runs `bd show <id> --json` and checks if label exists in Labels array.
+// Used to check if comment already synced.
+func (m *Manager) HasLabel(ctx context.Context, userID, issueID, label string) bool {
+	issue, err := m.GetIssue(ctx, userID, issueID)
+	if err != nil {
+		m.logger.Error("failed to check label",
+			zap.String("user_id", userID),
+			zap.String("issue_id", issueID),
+			zap.String("label", label),
+			zap.Error(err),
+		)
+		return false
+	}
+
+	// Check if label exists in the issue's labels
+	for _, l := range issue.Labels {
+		if l == label {
+			return true
+		}
+	}
+
+	return false
+}
+
+// ListIssuesByStatus runs `bd list --status <status1>,<status2> --json` to get issues with given statuses.
+// Used on startup to find issues that need re-registration (e.g., "open", "in_progress", "ready").
+func (m *Manager) ListIssuesByStatus(ctx context.Context, userID string, statuses []string) ([]*Issue, error) {
+	userDir := m.GetUserDir(userID)
+
+	// Build comma-separated status list
+	statusList := strings.Join(statuses, ",")
+
+	cmd := exec.CommandContext(ctx, bdBinaryPath, "list", "--status", statusList, "--json")
+	cmd.Dir = userDir
+
+	output, err := cmd.Output()
+	if err != nil {
+		// No issues found is not an error
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			if exitErr.ExitCode() == 1 {
+				return []*Issue{}, nil
+			}
+		}
+		m.logger.Error("failed to list issues by status",
+			zap.String("user_id", userID),
+			zap.Strings("statuses", statuses),
+			zap.Error(err),
+		)
+		return nil, fmt.Errorf("failed to list issues by status: %w", err)
+	}
+
+	// Parse JSON output
+	var issues []Issue
+	if err := json.Unmarshal(output, &issues); err != nil {
+		// Try parsing as empty result
+		if strings.TrimSpace(string(output)) == "[]" || strings.TrimSpace(string(output)) == "" {
+			return []*Issue{}, nil
+		}
+		m.logger.Error("failed to parse issues",
+			zap.String("user_id", userID),
+			zap.String("output", string(output)),
+			zap.Error(err),
+		)
+		return nil, fmt.Errorf("failed to parse issues: %w", err)
+	}
+
+	// Convert to pointer slice
+	result := make([]*Issue, len(issues))
+	for i := range issues {
+		result[i] = &issues[i]
+	}
+
+	m.logger.Info("listed issues by status",
+		zap.String("user_id", userID),
+		zap.Strings("statuses", statuses),
+		zap.Int("count", len(result)),
+	)
+
+	return result, nil
+}

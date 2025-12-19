@@ -5,13 +5,13 @@ import (
 )
 
 // SyncState tracks the synchronization state for a single issue.
-// It maintains which comments have been synced to Slack for this issue.
+// Note: Synced comments are tracked via beads labels (synced:<comment_id>)
+// instead of in-memory maps, making the syncer stateless and persistent.
 type SyncState struct {
-	IssueID          string
-	UserID           string
-	SlackThreadTS    string
-	ChannelID        string
-	SyncedCommentIDs map[string]bool
+	IssueID       string
+	UserID        string
+	SlackThreadTS string
+	ChannelID     string
 }
 
 // Tracker manages sync state for multiple issues.
@@ -36,11 +36,10 @@ func (t *Tracker) Register(issueID, userID, channelID, threadTS string) {
 	defer t.mu.Unlock()
 
 	t.states[issueID] = &SyncState{
-		IssueID:          issueID,
-		UserID:           userID,
-		SlackThreadTS:    threadTS,
-		ChannelID:        channelID,
-		SyncedCommentIDs: make(map[string]bool),
+		IssueID:       issueID,
+		UserID:        userID,
+		SlackThreadTS: threadTS,
+		ChannelID:     channelID,
 	}
 }
 
@@ -62,33 +61,18 @@ func (t *Tracker) GetState(issueID string) *SyncState {
 	return t.states[issueID]
 }
 
-// MarkCommentSynced marks a comment as synchronized for a given issue.
-// Returns false if the issue is not being tracked.
+// MarkCommentSynced is deprecated - comment sync state is now tracked via beads labels.
+// Use Manager.AddLabel(ctx, userID, issueID, "synced:<comment_id>") instead.
+// Kept for backwards compatibility but does nothing.
 func (t *Tracker) MarkCommentSynced(issueID, commentID string) bool {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	state, exists := t.states[issueID]
-	if !exists {
-		return false
-	}
-
-	state.SyncedCommentIDs[commentID] = true
 	return true
 }
 
-// IsCommentSynced checks if a comment has been synced for a given issue.
-// Returns false if the issue is not being tracked or comment is not synced.
+// IsCommentSynced is deprecated - comment sync state is now tracked via beads labels.
+// Use Manager.HasLabel(ctx, userID, issueID, "synced:<comment_id>") instead.
+// Kept for backwards compatibility but always returns false.
 func (t *Tracker) IsCommentSynced(issueID, commentID string) bool {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-
-	state, exists := t.states[issueID]
-	if !exists {
-		return false
-	}
-
-	return state.SyncedCommentIDs[commentID]
+	return false
 }
 
 // GetAllIssueIDs returns a list of all tracked issue IDs.

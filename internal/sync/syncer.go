@@ -57,8 +57,8 @@ func (s *CommentSyncer) Unregister(issueID string) {
 
 // SyncIssue synchronizes new agent comments for a specific issue to Slack.
 // It only syncs comments that:
-// 1. Have the "[agent]" prefix
-// 2. Have not been previously synced
+// 1. Have the "[agent]" prefix (assistant role)
+// 2. Have not been previously synced (checked via beads labels: synced:<comment_id>)
 func (s *CommentSyncer) SyncIssue(ctx context.Context, issueID string) error {
 	state := s.tracker.GetState(issueID)
 	if state == nil {
@@ -87,9 +87,10 @@ func (s *CommentSyncer) SyncIssue(ctx context.Context, issueID string) error {
 		// This is a simple approach since we don't have direct access to comment IDs
 		commentID := fmt.Sprintf("%d_%d", i, msg.Timestamp.Unix())
 
-		// Skip if already synced
-		if s.tracker.IsCommentSynced(issueID, commentID) {
-			continue
+		// Check if already synced via beads label
+		syncedLabel := "synced:" + commentID
+		if s.beadsMgr.HasLabel(ctx, state.UserID, issueID, syncedLabel) {
+			continue // Already synced
 		}
 
 		// Post the comment to Slack
@@ -111,8 +112,13 @@ func (s *CommentSyncer) SyncIssue(ctx context.Context, issueID string) error {
 			continue
 		}
 
-		// Mark as synced
-		s.tracker.MarkCommentSynced(issueID, commentID)
+		// Mark as synced via beads label
+		if err := s.beadsMgr.AddLabel(ctx, state.UserID, issueID, syncedLabel); err != nil {
+			s.logger.Warn("failed to mark comment as synced",
+				zap.String("issue_id", issueID),
+				zap.String("comment_id", commentID),
+				zap.Error(err))
+		}
 		syncedCount++
 
 		s.logger.Debug("synced agent comment to Slack",
@@ -184,4 +190,96 @@ func extractAgentContent(content string) (string, bool) {
 // This should be called after cancelling the context to ensure graceful shutdown.
 func (s *CommentSyncer) WaitForShutdown() {
 	<-s.syncLoopDone
+}
+
+// Restore rebuilds sync state from beads on startup.
+// Scans all user directories for issues with status in_progress/ready/open
+// and re-registers them using their thread:/channel:/user: labels.
+func (s *CommentSyncer) Restore(ctx context.Context) error {
+	s.logger.Info("restoring sync state from beads")
+
+	// Get all user directories
+	userIDs := s.beadsMgr.ListUserDirs()
+	if len(userIDs) == 0 {
+		s.logger.Info("no user directories found, nothing to restore")
+		return nil
+	}
+
+	s.logger.Info("scanning user directories for issues", zap.Int("user_count", len(userIDs)))
+
+	// Track statistics
+	totalIssues := 0
+	restoredIssues := 0
+	skippedIssues := 0
+
+	// Scan each user's issues
+	for _, userID := range userIDs {
+		issues, err := s.beadsMgr.ListIssuesByStatus(ctx, userID, []string{"open", "in_progress", "ready"})
+		if err != nil {
+			s.logger.Warn("failed to list issues for user",
+				zap.String("user_id", userID),
+				zap.Error(err),
+			)
+			continue
+		}
+
+		totalIssues += len(issues)
+
+		// Process each issue
+		for _, issue := range issues {
+			// Extract thread information from labels
+			threadTS := extractLabelValue(issue.Labels, "thread:")
+			channelID := extractLabelValue(issue.Labels, "channel:")
+			labelUserID := extractLabelValue(issue.Labels, "user:")
+
+			// Skip if missing required labels
+			if threadTS == "" || channelID == "" || labelUserID == "" {
+				s.logger.Debug("skipping issue without required labels",
+					zap.String("issue_id", issue.ID),
+					zap.String("user_id", userID),
+					zap.Bool("has_thread", threadTS != ""),
+					zap.Bool("has_channel", channelID != ""),
+					zap.Bool("has_user", labelUserID != ""),
+				)
+				skippedIssues++
+				continue
+			}
+
+			// Re-register the issue
+			threadInfo := &beads.ThreadInfo{
+				ChannelID: channelID,
+				ThreadTS:  threadTS,
+				UserID:    labelUserID,
+			}
+
+			s.RegisterIssue(issue.ID, userID, threadInfo)
+			restoredIssues++
+
+			s.logger.Debug("restored issue",
+				zap.String("issue_id", issue.ID),
+				zap.String("user_id", userID),
+				zap.String("thread_ts", threadTS),
+				zap.String("channel_id", channelID),
+			)
+		}
+	}
+
+	s.logger.Info("restore complete",
+		zap.Int("total_issues", totalIssues),
+		zap.Int("restored", restoredIssues),
+		zap.Int("skipped", skippedIssues),
+	)
+
+	return nil
+}
+
+// extractLabelValue extracts the value from a label with the given prefix.
+// For example, extractLabelValue(["thread:123", "channel:C456"], "thread:") returns "123".
+func extractLabelValue(labels []string, prefix string) string {
+	for _, label := range labels {
+		if strings.HasPrefix(label, prefix) {
+			return strings.TrimPrefix(label, prefix)
+		}
+	}
+	return ""
 }
