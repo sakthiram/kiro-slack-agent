@@ -64,6 +64,31 @@ func NewManager(cfg *config.BeadsConfig, logger *zap.Logger) *Manager {
 	}
 }
 
+// SyncDB runs `bd sync --import-only` to ensure the database is in sync with JSONL.
+// This should be called before operations that might fail due to stale db.
+func (m *Manager) SyncDB(ctx context.Context, userID string) error {
+	userDir := m.GetUserDir(userID)
+	return m.syncDBUnlocked(ctx, userDir)
+}
+
+// syncDBUnlocked runs sync without acquiring locks (for internal use when lock is held)
+func (m *Manager) syncDBUnlocked(ctx context.Context, userDir string) error {
+	cmd := exec.CommandContext(ctx, bdBinaryPath, "sync", "--import-only")
+	cmd.Dir = userDir
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		m.logger.Warn("bd sync failed",
+			zap.String("user_dir", userDir),
+			zap.String("output", string(output)),
+			zap.Error(err),
+		)
+		return fmt.Errorf("bd sync failed: %w", err)
+	}
+
+	return nil
+}
+
 // EnsureUserDir initializes beads for a user if not already done.
 // Creates sessions/<user_id>/.beads/ with bd init.
 // Returns the user's session directory path.
@@ -81,6 +106,8 @@ func (m *Manager) EnsureUserDir(ctx context.Context, userID string) (string, err
 
 	// Check if .beads directory exists
 	if _, err := os.Stat(beadsDir); err == nil {
+		// Sync db on first access to ensure consistency
+		_ = m.syncDBUnlocked(ctx, userDir) // Best effort
 		m.initialized[userID] = true
 		return userDir, nil
 	}
@@ -124,10 +151,10 @@ func (m *Manager) FindThreadIssue(ctx context.Context, userID string, thread *Th
 	userDir := m.GetUserDir(userID)
 
 	// Use bd list with label filter to find the issue
-	// bd list --label thread:<ts> --json
+	// bd list --label thread:<ts> --json --allow-stale
 	cmd := exec.CommandContext(ctx, bdBinaryPath, "list",
 		"--label", "thread:"+thread.ThreadTS,
-		"--json",
+		"--json", "--allow-stale",
 	)
 	cmd.Dir = userDir
 
@@ -241,7 +268,7 @@ func (m *Manager) GetConversationContext(ctx context.Context, userID, issueID st
 	userDir := m.GetUserDir(userID)
 
 	// Get issue details with comments using bd show
-	cmd := exec.CommandContext(ctx, bdBinaryPath, "show", issueID, "--json")
+	cmd := exec.CommandContext(ctx, bdBinaryPath, "show", issueID, "--json", "--allow-stale")
 	cmd.Dir = userDir
 
 	output, err := cmd.Output()
@@ -365,7 +392,8 @@ func (m *Manager) ListUserDirs() []string {
 func (m *Manager) GetReadyTasks(ctx context.Context, userID string) ([]ReadyTask, error) {
 	userDir := m.GetUserDir(userID)
 
-	cmd := exec.CommandContext(ctx, bdBinaryPath, "ready", "--json")
+	// Use --allow-stale to prevent failures when db is out of sync
+	cmd := exec.CommandContext(ctx, bdBinaryPath, "ready", "--json", "--allow-stale")
 	cmd.Dir = userDir
 
 	output, err := cmd.Output()
@@ -543,7 +571,7 @@ func (m *Manager) AddAgentComment(ctx context.Context, userID, issueID, content 
 func (m *Manager) GetIssue(ctx context.Context, userID, issueID string) (*Issue, error) {
 	userDir := m.GetUserDir(userID)
 
-	cmd := exec.CommandContext(ctx, bdBinaryPath, "show", issueID, "--json")
+	cmd := exec.CommandContext(ctx, bdBinaryPath, "show", issueID, "--json", "--allow-stale")
 	cmd.Dir = userDir
 
 	output, err := cmd.Output()
@@ -624,7 +652,7 @@ func (m *Manager) ListIssuesByStatus(ctx context.Context, userID string, statuse
 	// Build comma-separated status list
 	statusList := strings.Join(statuses, ",")
 
-	cmd := exec.CommandContext(ctx, bdBinaryPath, "list", "--status", statusList, "--json")
+	cmd := exec.CommandContext(ctx, bdBinaryPath, "list", "--status", statusList, "--json", "--allow-stale")
 	cmd.Dir = userDir
 
 	output, err := cmd.Output()
