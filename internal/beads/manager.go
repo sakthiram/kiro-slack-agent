@@ -104,12 +104,30 @@ func (m *Manager) EnsureUserDir(ctx context.Context, userID string) (string, err
 		return userDir, nil
 	}
 
-	// Check if .beads directory exists
+	// Check if .beads directory exists AND is properly initialized
 	if _, err := os.Stat(beadsDir); err == nil {
-		// Sync db on first access to ensure consistency
-		_ = m.syncDBUnlocked(ctx, userDir) // Best effort
-		m.initialized[userID] = true
-		return userDir, nil
+		// Verify beads has issue_prefix configured (required for creating issues)
+		checkCmd := exec.CommandContext(ctx, bdBinaryPath, "config", "get", "issue_prefix")
+		checkCmd.Dir = userDir
+		if checkOutput, checkErr := checkCmd.CombinedOutput(); checkErr == nil && len(strings.TrimSpace(string(checkOutput))) > 0 {
+			// Beads is properly initialized with prefix, sync and mark as initialized
+			_ = m.syncDBUnlocked(ctx, userDir) // Best effort
+			m.initialized[userID] = true
+			return userDir, nil
+		} else {
+			// .beads exists but missing issue_prefix - remove and reinit
+			m.logger.Warn("beads directory exists but missing issue_prefix, reinitializing",
+				zap.String("user_id", userID),
+				zap.String("output", string(checkOutput)),
+			)
+			if removeErr := os.RemoveAll(beadsDir); removeErr != nil {
+				m.logger.Error("failed to remove corrupted beads directory",
+					zap.String("user_id", userID),
+					zap.Error(removeErr),
+				)
+				return "", fmt.Errorf("failed to remove corrupted beads directory: %w", removeErr)
+			}
+		}
 	}
 
 	// Create user directory
@@ -118,7 +136,7 @@ func (m *Manager) EnsureUserDir(ctx context.Context, userID string) (string, err
 	}
 
 	// Initialize beads with bd init
-	cmd := exec.CommandContext(ctx, bdBinaryPath, "init", "--prefix", m.issuePrefix+"-"+userID)
+	cmd := exec.CommandContext(ctx, bdBinaryPath, "init", "--prefix", m.issuePrefix+userID)
 	cmd.Dir = userDir
 
 	output, err := cmd.CombinedOutput()

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/sakthiram/kiro-slack-agent/internal/beads"
@@ -11,28 +12,42 @@ import (
 	"go.uber.org/zap"
 )
 
+// BeadsManager defines the interface for beads operations used by the syncer.
+type BeadsManager interface {
+	GetConversationContext(ctx context.Context, userID, issueID string) ([]beads.Message, error)
+	AddLabel(ctx context.Context, userID, issueID, label string) error
+	HasLabel(ctx context.Context, userID, issueID, label string) bool
+	ListUserDirs() []string
+	ListIssuesByStatus(ctx context.Context, userID string, statuses []string) ([]*beads.Issue, error)
+}
+
 // CommentSyncer synchronizes agent comments from Beads issues to Slack threads.
 // It only syncs comments with the "[agent]" prefix.
 type CommentSyncer struct {
 	tracker      *Tracker
-	beadsMgr     *beads.Manager
+	beadsMgr     BeadsManager
 	slackClient  slack.ClientInterface
 	logger       *zap.Logger
 	syncLoopDone chan struct{}
+
+	// In-memory tracking to prevent race conditions between worker sync and sync loop
+	syncedComments map[string]struct{} // key: "issueID:commentID"
+	syncMu         sync.Mutex
 }
 
 // NewCommentSyncer creates a new comment syncer.
 func NewCommentSyncer(
-	beadsMgr *beads.Manager,
+	beadsMgr BeadsManager,
 	slackClient slack.ClientInterface,
 	logger *zap.Logger,
 ) *CommentSyncer {
 	return &CommentSyncer{
-		tracker:      NewTracker(),
-		beadsMgr:     beadsMgr,
-		slackClient:  slackClient,
-		logger:       logger,
-		syncLoopDone: make(chan struct{}),
+		tracker:        NewTracker(),
+		beadsMgr:       beadsMgr,
+		slackClient:    slackClient,
+		logger:         logger,
+		syncLoopDone:   make(chan struct{}),
+		syncedComments: make(map[string]struct{}),
 	}
 }
 
@@ -77,20 +92,31 @@ func (s *CommentSyncer) SyncIssue(ctx context.Context, issueID string) error {
 
 	// Sync agent comments
 	syncedCount := 0
-	for i, msg := range messages {
+	for _, msg := range messages {
 		// Only sync assistant messages (agent responses)
 		if msg.Role != "assistant" {
 			continue
 		}
 
-		// Generate a comment ID based on the message index and timestamp
-		// This is a simple approach since we don't have direct access to comment IDs
-		commentID := fmt.Sprintf("%d_%d", i, msg.Timestamp.Unix())
+		// Generate a stable comment ID based on role and timestamp
+		// Using UnixNano() for higher precision and msg.Role for stability
+		commentID := fmt.Sprintf("%s_%d", msg.Role, msg.Timestamp.UnixNano())
+		syncKey := issueID + ":" + commentID
 
-		// Check if already synced via beads label
+		// Check in-memory tracking first (prevents race conditions)
+		s.syncMu.Lock()
+		if _, alreadySynced := s.syncedComments[syncKey]; alreadySynced {
+			s.syncMu.Unlock()
+			continue // Already synced in-memory
+		}
+		// Mark as syncing immediately to prevent duplicates
+		s.syncedComments[syncKey] = struct{}{}
+		s.syncMu.Unlock()
+
+		// Also check beads label (for persistence across restarts)
 		syncedLabel := "synced:" + commentID
 		if s.beadsMgr.HasLabel(ctx, state.UserID, issueID, syncedLabel) {
-			continue // Already synced
+			continue // Already synced in beads
 		}
 
 		// Post the comment to Slack
@@ -108,11 +134,14 @@ func (s *CommentSyncer) SyncIssue(ctx context.Context, issueID string) error {
 				zap.String("thread_ts", state.SlackThreadTS),
 				zap.Error(err),
 			)
-			// Continue with other comments even if one fails
+			// Remove from in-memory tracking on failure so it can be retried
+			s.syncMu.Lock()
+			delete(s.syncedComments, syncKey)
+			s.syncMu.Unlock()
 			continue
 		}
 
-		// Mark as synced via beads label
+		// Mark as synced via beads label (for persistence)
 		if err := s.beadsMgr.AddLabel(ctx, state.UserID, issueID, syncedLabel); err != nil {
 			s.logger.Warn("failed to mark comment as synced",
 				zap.String("issue_id", issueID),

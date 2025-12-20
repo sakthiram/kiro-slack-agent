@@ -178,7 +178,8 @@ func (w *Worker) processTaskInternal(ctx context.Context, task *queue.TaskWork, 
 	var prompt string
 	for i := len(messages) - 1; i >= 0; i-- {
 		if messages[i].Role == "user" {
-			prompt = messages[i].Content
+			// Build enhanced prompt with bd instructions and task context
+			prompt = buildAgentPrompt(task.IssueID, messages[i].Content)
 			break
 		}
 	}
@@ -201,15 +202,10 @@ func (w *Worker) processTaskInternal(ctx context.Context, task *queue.TaskWork, 
 
 	result.Response = response
 
-	// Add the agent's response as a comment
-	w.logger.Debug("adding agent comment",
-		zap.String("issue_id", task.IssueID),
-		zap.Int("response_length", len(response)),
-	)
-
-	if err := w.beadsMgr.UpdateThreadIssue(ctx, task.UserID, task.IssueID, "agent", response); err != nil {
-		return fmt.Errorf("failed to add agent comment: %w", err)
-	}
+	// NOTE: We don't automatically add the response as a comment.
+	// The agent is responsible for adding its own comment via:
+	//   bd comment <issue_id> "[agent] <final answer>"
+	// Only [agent] prefixed comments get synced to Slack.
 
 	// Trigger comment synchronization to Slack
 	w.logger.Debug("triggering comment sync",
@@ -224,19 +220,38 @@ func (w *Worker) processTaskInternal(ctx context.Context, task *queue.TaskWork, 
 		)
 	}
 
-	// Mark task as closed so it won't be picked up again by bd ready
-	// Valid statuses: open, in_progress, blocked, closed
-	w.logger.Debug("marking task as closed",
-		zap.String("issue_id", task.IssueID),
-	)
-
-	if err := w.beadsMgr.UpdateTaskStatus(ctx, task.UserID, task.IssueID, "closed"); err != nil {
-		w.logger.Warn("failed to mark task as closed",
-			zap.String("issue_id", task.IssueID),
-			zap.Error(err),
-		)
-		// Non-fatal - the task was processed successfully
-	}
-
 	return nil
+}
+
+// buildAgentPrompt creates a comprehensive prompt for the kiro agent with bd instructions.
+func buildAgentPrompt(issueID, userMessage string) string {
+	return fmt.Sprintf(`BEFORE ANYTHING ELSE: run 'bd onboard' and follow the instructions.
+
+## Your Task (Issue: %s)
+%s
+
+## CRITICAL: How to Respond
+
+Your response to the user is ONLY what you write via bd comment with [agent] prefix.
+Everything else you do (tool calls, thinking, exploration) is NOT sent to Slack.
+
+**When you have your final answer, run this command:**
+
+bd comment %s "[agent] <your concise answer here>"
+
+Example of a GOOD response:
+bd comment %s "[agent] *Analysis Complete*
+
+• Found 42 privacy events in the data
+• 30 with privacy ON, 12 with privacy OFF
+• Query saved to /tmp/results.csv"
+
+**DO NOT** include:
+- Your exploration/thinking process
+- Tool call outputs
+- ANSI codes or terminal formatting
+- Anything over 2000 characters
+
+**When done, close the issue:**
+bd close %s --reason "brief summary"`, issueID, userMessage, issueID, issueID, issueID)
 }
