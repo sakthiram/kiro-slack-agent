@@ -1,6 +1,6 @@
 # Architecture
 
-This document describes the technical architecture of the Amelia Slack Agent, including system design, component interactions, and implementation details.
+This document describes the technical architecture of the Kiro Slack Agent, including system design, component interactions, and implementation details.
 
 ## Table of Contents
 
@@ -15,7 +15,7 @@ This document describes the technical architecture of the Amelia Slack Agent, in
 
 ## System Overview
 
-The Amelia Slack Agent is a Go-based service that bridges Slack conversations to the Kiro CLI agent using an **asynchronous, event-driven architecture**. It uses Slack's Socket Mode for real-time event delivery and **beads (bd)** for issue tracking and context management.
+The Kiro Slack Agent is a Go-based service that bridges Slack conversations to the Kiro CLI agent using an **asynchronous, event-driven architecture**. It uses Slack's Socket Mode for real-time event delivery and **beads (bd)** for issue tracking and context management.
 
 ```
 +------------------+     +------------------+     +------------------+
@@ -370,7 +370,7 @@ Every sync_interval (default 5s):
 
 **Main Post** (new conversation):
 ```
-User posts in channel: "@AmeliaBot help me write a script"
+User posts in channel: "@KiroBot help me write a script"
     │
     └──▶ ProcessMainPost()
             │

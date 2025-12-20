@@ -1,10 +1,10 @@
-# Amelia Slack Agent
+# Kiro Slack Agent
 
 A Slack bot that bridges messages to the Kiro CLI agent, enabling conversational AI interactions directly within Slack. The bot supports direct messages, @mentions, and thread-based conversations with persistent context via beads issue tracking.
 
 ## Overview
 
-Amelia Slack Agent provides a seamless interface between Slack and the Kiro CLI, allowing teams to interact with an AI agent directly from their workspace. Each Slack thread maintains its own persistent session with the Kiro CLI, preserving conversation context across multiple messages.
+Kiro Slack Agent provides a seamless interface between Slack and the Kiro CLI, allowing teams to interact with an AI agent directly from their workspace. Each Slack thread maintains its own persistent session with the Kiro CLI, preserving conversation context across multiple messages.
 
 ### Key Features
 
@@ -301,7 +301,7 @@ make clean          # Remove build artifacts and coverage files
 ## Project Structure
 
 ```
-amelia-slack-agent/
+kiro-slack-agent/
 ├── cmd/server/            # Main entry point
 ├── internal/
 │   ├── config/           # Configuration management
@@ -351,7 +351,7 @@ Bot: ✍️ Sure! I'll help you create a Python script...
 Mention the bot in any channel where it's a member:
 
 ```
-User: @AmeliaBot can you explain how to use Docker?
+User: @KiroBot can you explain how to use Docker?
 Bot: 🤔 Thinking...
 Bot: ✍️ Docker is a containerization platform...
 ```
@@ -361,7 +361,7 @@ Bot: ✍️ Docker is a containerization platform...
 Reply to any bot message to continue the conversation:
 
 ```
-User: @AmeliaBot write a hello world program
+User: @KiroBot write a hello world program
 Bot: Here's a simple hello world program...
 
 User: [in thread] Now add command line arguments
