@@ -10,6 +10,15 @@ import (
 	"go.uber.org/zap"
 )
 
+// BeadsManager defines the interface for beads issue management operations.
+type BeadsManager interface {
+	EnsureUserDir(ctx context.Context, userID string) (string, error)
+	CreateFeature(ctx context.Context, userID string, thread *beads.ThreadInfo, title, description string) (*beads.Issue, error)
+	CreateTask(ctx context.Context, userID, parentID string, thread *beads.ThreadInfo, title string) (*beads.Issue, error)
+	FindThreadIssue(ctx context.Context, userID string, thread *beads.ThreadInfo) (*beads.Issue, error)
+	UpdateThreadIssue(ctx context.Context, userID, issueID, role, message string) error
+}
+
 // Syncer provides an interface for registering issues for comment synchronization.
 type Syncer interface {
 	RegisterIssue(issueID string, userID string, thread *beads.ThreadInfo)
@@ -63,6 +72,7 @@ func (p *FeatureProcessor) ProcessMainPost(ctx context.Context, msg *slack.Messa
 	thread := &beads.ThreadInfo{
 		ChannelID: msg.ChannelID,
 		ThreadTS:  msg.MessageTS,
+		MessageTS: msg.MessageTS, // Same as ThreadTS for main posts
 		UserID:    msg.UserID,
 	}
 
@@ -133,10 +143,11 @@ func (p *FeatureProcessor) ProcessThreadReply(ctx context.Context, msg *slack.Me
 		return p.ProcessMainPost(ctx, msg)
 	}
 
-	// Build thread info for this reply (using message TS as unique identifier)
+	// Build thread info for this reply (using parent thread TS for grouping)
 	replyThread := &beads.ThreadInfo{
 		ChannelID: msg.ChannelID,
-		ThreadTS:  msg.MessageTS, // This reply's TS becomes its thread identifier
+		ThreadTS:  msg.ThreadTS,  // Parent thread TS for grouping
+		MessageTS: msg.MessageTS, // This reply's TS for deduplication/deep linking
 		UserID:    msg.UserID,
 	}
 

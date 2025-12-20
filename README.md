@@ -1,6 +1,6 @@
 # Amelia Slack Agent
 
-A Slack bot that bridges messages to the Kiro CLI agent, enabling conversational AI interactions directly within Slack. The bot supports direct messages, @mentions, thread-based sessions, and real-time streaming responses.
+A Slack bot that bridges messages to the Kiro CLI agent, enabling conversational AI interactions directly within Slack. The bot supports direct messages, @mentions, and thread-based conversations with persistent context via beads issue tracking.
 
 ## Overview
 
@@ -16,12 +16,43 @@ Amelia Slack Agent provides a seamless interface between Slack and the Kiro CLI,
 - **Comment Sync**: Agent responses automatically sync from beads to Slack threads
 - **Retry Logic**: Automatic retry on Kiro CLI failures for reliability
 - **Non-Interactive Execution**: Uses `kiro-cli --no-interactive` for simple, robust integration
+- **Restart Resilience**: State persisted in beads labels - survives restarts without duplicate messages
+- **Automatic Database Sync**: Beads database synchronized on access to prevent stale data issues
+- **Thread History Context**: Worker agents can access previous issues from the same conversation thread
+- **Race Condition Protection**: Mutex-protected tracking prevents duplicate message delivery
 
 ## Prerequisites
 
 - **Go 1.22+**: Required for building and running the agent
 - **kiro-cli**: The Kiro CLI must be installed and accessible in your PATH (or specify the binary path in config)
+- **beads (bd)**: Git-backed issue tracker for conversation state management
 - **Slack App**: A Slack app configured with Socket Mode and appropriate permissions (see [Slack App Configuration](#slack-app-configuration) below)
+
+### Installing beads (bd)
+
+Beads is the issue tracking system that stores conversation state. Install it using one of these methods:
+
+**Quick Install (macOS/Linux):**
+```bash
+curl -fsSL https://raw.githubusercontent.com/steveyegge/beads/main/scripts/install.sh | bash
+```
+
+**Homebrew (macOS/Linux):**
+```bash
+brew tap steveyegge/beads
+brew install bd
+```
+
+**Go Install:**
+```bash
+go install github.com/steveyegge/beads/cmd/bd@latest
+export PATH="$PATH:$HOME/go/bin"
+```
+
+**Verify installation:**
+```bash
+bd --version
+```
 
 ## Slack App Configuration
 
@@ -213,13 +244,6 @@ session:
   database_path: "/tmp/kiro-agent/sessions.db"  # SQLite database location
 ```
 
-#### Streaming
-
-```yaml
-streaming:
-  update_interval: "500ms"      # Debounce interval for Slack message updates
-```
-
 #### Worker Pool
 
 ```yaml
@@ -281,16 +305,16 @@ amelia-slack-agent/
 ├── cmd/server/            # Main entry point
 ├── internal/
 │   ├── config/           # Configuration management
-│   ├── logging/          # Logging setup
+│   ├── logging/          # Structured logging setup
 │   ├── slack/            # Slack API integration
 │   │   ├── client.go     # Slack API wrapper
 │   │   ├── handler.go    # Event handlers (routes to feature processor)
 │   │   └── message.go    # Message parsing and formatting
 │   ├── beads/            # Beads (bd) issue tracking integration
-│   │   ├── manager.go    # BD CLI wrapper for issue CRUD
+│   │   ├── manager.go    # BD CLI wrapper for issue CRUD, labels, sync
 │   │   └── types.go      # Issue, Comment, ThreadInfo types
 │   ├── processor/        # Message processing
-│   │   ├── feature_processor.go  # Creates Feature/Task issues
+│   │   ├── feature_processor.go  # Creates Feature/Task issues from Slack
 │   │   └── message_processor.go  # Legacy synchronous processor
 │   ├── queue/            # Task queue system
 │   │   ├── queue.go      # Channel-based task queue
@@ -298,17 +322,13 @@ amelia-slack-agent/
 │   │   └── types.go      # TaskWork, TaskResult types
 │   ├── worker/           # Worker pool for async processing
 │   │   ├── pool.go       # Worker pool management
-│   │   ├── worker.go     # Individual worker logic
+│   │   ├── worker.go     # Individual worker logic with thread context
 │   │   └── runner.go     # KiroRunner (non-interactive CLI)
-│   ├── sync/             # Comment synchronization
-│   │   ├── syncer.go     # Beads → Slack comment sync
-│   │   └── tracker.go    # Sync state tracking
-│   ├── kiro/             # Kiro CLI integration (legacy PTY)
-│   │   └── ...           # Bridge, process, parser (deprecated)
-│   └── streaming/        # Streaming updates (legacy)
-│       └── ...           # Streamer, buffer
+│   └── sync/             # Comment synchronization
+│       ├── syncer.go     # Beads → Slack comment sync with restart recovery
+│       └── tracker.go    # Label-based sync state tracking
 ├── configs/             # Configuration files
-├── docs/               # Documentation
+├── docs/               # Architecture documentation
 └── Makefile           # Build and development commands
 ```
 
@@ -352,9 +372,12 @@ Each thread maintains its own Kiro CLI session, preserving full conversation con
 
 ### Response Indicators
 
-- 🤔 **Thinking...**: Bot has received your message and is processing
-- ✍️ **Writing...**: Bot is streaming its response (message updates in real-time)
+- 📝 **Received! Working on it...**: Bot has received a new message and created a Feature issue
+- 👍 **Got it! Processing...**: Bot has received a thread reply and created a Task issue
+- ✍️ **[agent]**: Agent response synced from beads to Slack
 - ❌ **Error**: Something went wrong (error message follows)
+
+**Note**: All responses appear in the correct thread context. When you @mention the bot or reply to a thread, acknowledgments and responses stay in that thread.
 
 ### Session Management
 
@@ -388,59 +411,13 @@ Each thread maintains its own Kiro CLI session, preserving full conversation con
 - Check that `kiro.session_base_path` exists and is writable
 - Review session cleanup logs for errors
 
-## Web Terminal Observer
+#### Duplicate messages or missed comments
 
-The Web Terminal Observer allows you to watch Kiro agent sessions in real-time through your browser, similar to `tmux attach`. This is useful for debugging, monitoring, or simply watching how the agent processes requests.
-
-### Enabling the Web Observer
-
-Add the following to your `config.yaml`:
-
-```yaml
-web:
-  enabled: true
-  listen_addr: ":8080"           # HTTP server address
-  static_path: "./web/static"    # Path to web UI files
-  max_observers_per_session: 10  # Max concurrent viewers per session
-```
-
-### Using the Web Observer
-
-1. **Start the server** with web observer enabled
-2. **Open your browser** to `http://localhost:8080`
-3. **View active sessions** - see all currently active Kiro sessions
-4. **Click a session** to attach and watch the terminal output in real-time
-
-### Features
-
-- **Real-time streaming**: See agent output as it happens via WebSocket
-- **Scrollback history**: Late joiners see recent output (64KB buffer)
-- **Multiple observers**: Multiple people can watch the same session
-- **Read-only by default**: Observers can only watch, not interact
-- **Session list**: View all active sessions with status and user info
-
-### API Endpoints
-
-| Endpoint | Description |
-|----------|-------------|
-| `GET /` | Web UI |
-| `GET /api/sessions` | List all active sessions (JSON) |
-| `GET /api/sessions/:id` | Get session details (JSON) |
-| `GET /ws/sessions/:id/stream` | WebSocket for real-time streaming |
-| `GET /api/health` | Health check |
-
-### Architecture
-
-```
-Browser (xterm.js) <--WebSocket--> Server <--PTY Multiplexer--> kiro-cli
-                                     |
-                            ObservableProcess
-                            (broadcasts to all observers)
-```
-
-The `ObservableProcess` wraps the standard Kiro PTY process and broadcasts output to:
-1. The Slack streamer (for message updates)
-2. All connected web observers (via WebSocket)
+- The agent automatically syncs the beads database on startup and user access
+- Duplicate messages can occur if multiple agent instances are running - check for zombie processes
+- Database sync happens automatically via `bd sync --import-only` - no manual intervention needed
+- All read operations use `--allow-stale` flag for resilience against temporary sync issues
+- Restart the agent if you suspect stale state - the agent will restore all active conversations automatically
 
 ## Architecture
 
@@ -466,6 +443,40 @@ User Message → Slack → Socket Mode → Handler → Feature Processor
 ```
 
 The architecture is **fully async**: the Slack handler returns immediately after creating the beads issue, and the response arrives via the comment sync loop.
+
+## State Persistence and Restart Recovery
+
+The agent persists all sync state in beads labels, making it stateless and resilient to restarts:
+
+- **Comment Tracking**: Synced comments tracked via `synced:<comment_id>` labels
+- **Issue Registration**: Active issues registered with `thread:<ts>`, `channel:<id>`, `user:<id>`, `msg:<ts>` labels
+- **Automatic Restoration**: On startup, the syncer scans beads and re-registers all issues with status `open`, `in_progress`, or `ready`
+- **No Duplicate Messages**: Label-based tracking prevents duplicate Slack messages after restarts
+- **Database Sync**: Beads database automatically synced on first user access via `bd sync --import-only`
+
+This design ensures the agent can be restarted at any time without losing track of conversations or sending duplicate responses.
+
+### How It Works
+
+1. **On Startup**: The syncer calls `Restore()` which scans all beads issues and re-registers active conversations
+2. **During Operation**: Each synced comment gets a `synced:<comment_id>` label to prevent re-posting
+3. **On User Access**: `EnsureUserDir()` runs `bd sync --import-only` to sync remote changes
+4. **Read Operations**: All beads read commands use `--allow-stale` flag for resilience
+
+### Thread History for Worker Agents
+
+Worker agents processing tasks receive the `thread:` label from the issue, enabling them to query all related issues from the same conversation:
+
+```bash
+# Get all issues from the same Slack thread
+bd list --label thread:1766187249.573709 --json --allow-stale
+```
+
+This allows agents to:
+- Review what the user previously asked
+- See what analysis was already done
+- Build on previous solutions and queries
+- Provide consistent, context-aware responses
 
 ## Contributing
 
@@ -497,3 +508,4 @@ For issues, questions, or contributions:
 - Built with [slack-go/slack](https://github.com/slack-go/slack) for Slack integration
 - Uses [creack/pty](https://github.com/creack/pty) for PTY management
 - Powered by Kiro CLI agent
+- Issue tracking via [beads (bd)](https://github.com/steveyegge/beads) - Git-backed issue tracker for AI workflows

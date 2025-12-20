@@ -10,13 +10,12 @@ import (
 
 // Config holds all configuration for the application.
 type Config struct {
-	Slack     SlackConfig     `mapstructure:"slack"`
-	Kiro      KiroConfig      `mapstructure:"kiro"`
-	Beads     BeadsConfig     `mapstructure:"beads"`
-	Streaming StreamingConfig `mapstructure:"streaming"`
-	Worker    WorkerConfig    `mapstructure:"worker"`
-	Sync      SyncConfig      `mapstructure:"sync"`
-	Logging   LoggingConfig   `mapstructure:"logging"`
+	Slack   SlackConfig   `mapstructure:"slack"`
+	Kiro    KiroConfig    `mapstructure:"kiro"`
+	Beads   BeadsConfig   `mapstructure:"beads"`
+	Worker  WorkerConfig  `mapstructure:"worker"`
+	Sync    SyncConfig    `mapstructure:"sync"`
+	Logging LoggingConfig `mapstructure:"logging"`
 }
 
 // SlackConfig holds Slack-specific configuration.
@@ -40,11 +39,6 @@ type BeadsConfig struct {
 	SessionsBasePath   string `mapstructure:"sessions_base_path"`   // default: /var/kiro-agent/sessions
 	IssuePrefix        string `mapstructure:"issue_prefix"`         // default: slack
 	ContextMaxMessages int    `mapstructure:"context_max_messages"` // default: 20
-}
-
-// StreamingConfig holds streaming output configuration.
-type StreamingConfig struct {
-	UpdateInterval time.Duration `mapstructure:"update_interval"` // default: 500ms
 }
 
 // LoggingConfig holds logging configuration.
@@ -125,9 +119,6 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("beads.sessions_base_path", "/var/kiro-agent/sessions")
 	v.SetDefault("beads.issue_prefix", "slack")
 	v.SetDefault("beads.context_max_messages", 20)
-
-	// Streaming defaults
-	v.SetDefault("streaming.update_interval", 500*time.Millisecond)
 
 	// Worker defaults
 	v.SetDefault("worker.pool_size", 3)

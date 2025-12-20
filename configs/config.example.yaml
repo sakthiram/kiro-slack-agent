@@ -31,19 +31,23 @@ session:
   # SQLite database path for session state
   database_path: "/tmp/kiro-agent/sessions.db"
 
-streaming:
-  # Interval for streaming updates to Slack
-  update_interval: "500ms"
+worker:
+  # Number of concurrent workers processing tasks
+  pool_size: 3
+  # How often to poll bd ready for new tasks
+  poll_interval: "10s"
+  # Maximum time for kiro-cli execution per task
+  task_timeout: "5m"
+  # Retry count on failure
+  max_retries: 2
+  # Wait time between retries
+  retry_backoff: "30s"
 
-# Web Observer (optional)
-# Enable to watch agent sessions in real-time via browser
-web:
-  enabled: false                    # Set to true to enable web observer
-  listen_addr: ":8080"             # HTTP server address
-  static_path: "./web/static"      # Path to static web files
-  max_observers_per_session: 10    # Max concurrent viewers per session
-  auth_enabled: true               # Require authentication for API/WebSocket (default: true)
-  auth_token: ""                   # Leave empty to auto-generate on startup
+sync:
+  # How often to sync comments from beads to Slack
+  sync_interval: "5s"
+  # Enable/disable comment synchronization
+  enabled: true
 
 logging:
   # Log level: debug, info, warn, error

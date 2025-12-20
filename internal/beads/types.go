@@ -42,15 +42,21 @@ type Message struct {
 // ThreadInfo contains information about a Slack thread for tracking.
 type ThreadInfo struct {
 	ChannelID string
-	ThreadTS  string
+	ThreadTS  string // Parent thread timestamp (for grouping related issues)
+	MessageTS string // Individual message timestamp (for deduplication/deep linking)
 	UserID    string
 }
 
 // Labels generates the labels for a thread issue.
 func (t *ThreadInfo) Labels() []string {
-	return []string{
+	labels := []string{
 		"thread:" + t.ThreadTS,
 		"channel:" + t.ChannelID,
 		"user:" + t.UserID,
 	}
+	// Add msg: label for deduplication and deep linking
+	if t.MessageTS != "" {
+		labels = append(labels, "msg:"+t.MessageTS)
+	}
+	return labels
 }

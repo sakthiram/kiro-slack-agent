@@ -163,6 +163,15 @@ func (w *Worker) processTaskInternal(ctx context.Context, task *queue.TaskWork, 
 	// Get the user's working directory
 	userDir := w.beadsMgr.GetUserDir(task.UserID)
 
+	// Get the issue details to extract thread label for history context
+	issue, err := w.beadsMgr.GetIssue(ctx, task.UserID, task.IssueID)
+	if err != nil {
+		return fmt.Errorf("failed to get issue details: %w", err)
+	}
+
+	// Extract thread timestamp from labels for conversation history
+	threadTS := extractLabelValue(issue.Labels, "thread:")
+
 	// Get the issue details to build the prompt
 	messages, err := w.beadsMgr.GetConversationContext(ctx, task.UserID, task.IssueID)
 	if err != nil {
@@ -178,8 +187,8 @@ func (w *Worker) processTaskInternal(ctx context.Context, task *queue.TaskWork, 
 	var prompt string
 	for i := len(messages) - 1; i >= 0; i-- {
 		if messages[i].Role == "user" {
-			// Build enhanced prompt with bd instructions and task context
-			prompt = buildAgentPrompt(task.IssueID, messages[i].Content)
+			// Build enhanced prompt with bd instructions, task context, and thread history
+			prompt = buildAgentPrompt(task.IssueID, messages[i].Content, threadTS)
 			break
 		}
 	}
@@ -224,9 +233,28 @@ func (w *Worker) processTaskInternal(ctx context.Context, task *queue.TaskWork, 
 }
 
 // buildAgentPrompt creates a comprehensive prompt for the kiro agent with bd instructions.
-func buildAgentPrompt(issueID, userMessage string) string {
-	return fmt.Sprintf(`BEFORE ANYTHING ELSE: run 'bd onboard' and follow the instructions.
+func buildAgentPrompt(issueID, userMessage, threadTS string) string {
+	// Build thread history section if we have a thread timestamp
+	threadHistorySection := ""
+	if threadTS != "" {
+		threadHistorySection = fmt.Sprintf(`
+## Conversation History (IMPORTANT!)
 
+This task is part of an ongoing conversation thread. To get context from previous work:
+
+bd list --label thread:%s --json --allow-stale
+
+Review closed issues' comments to understand:
+- What the user previously asked
+- What analysis was already done
+- What solutions/queries were provided
+
+Use this context to provide relevant, consistent answers!
+`, threadTS)
+	}
+
+	return fmt.Sprintf(`BEFORE ANYTHING ELSE: run 'bd onboard' and follow the instructions.
+%s
 ## Your Task (Issue: %s)
 %s
 
@@ -253,5 +281,16 @@ bd comment %s "[agent] *Analysis Complete*
 - Anything over 2000 characters
 
 **When done, close the issue:**
-bd close %s --reason "brief summary"`, issueID, userMessage, issueID, issueID, issueID)
+bd close %s --reason "brief summary"`, threadHistorySection, issueID, userMessage, issueID, issueID, issueID)
+}
+
+// extractLabelValue extracts the value from a label with the given prefix.
+// For example, extractLabelValue(["thread:123", "channel:C456"], "thread:") returns "123".
+func extractLabelValue(labels []string, prefix string) string {
+	for _, label := range labels {
+		if len(label) > len(prefix) && label[:len(prefix)] == prefix {
+			return label[len(prefix):]
+		}
+	}
+	return ""
 }
