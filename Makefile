@@ -1,8 +1,12 @@
-.PHONY: build test lint run clean deps mocks test-integration test-e2e
+.PHONY: build build-local test lint run clean deps mocks test-integration
 
-# Build the server binary
+# Build the server binary to bin/
 build:
 	go build -o bin/server ./cmd/server
+
+# Build the server binary to current directory
+build-local:
+	go build -o server ./cmd/server
 
 # Run all tests with coverage
 test:
@@ -33,7 +37,3 @@ mocks:
 # Integration tests (requires kiro-cli)
 test-integration:
 	go test -v -tags=integration ./...
-
-# E2E tests (requires Slack test workspace)
-test-e2e:
-	E2E_TEST=true go test -v -tags=e2e ./internal/e2e/...

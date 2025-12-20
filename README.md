@@ -190,11 +190,13 @@ session:
 ### 3. Build and Run
 
 ```bash
-# Build the binary
+# Build the binary (to bin/server)
 make build
-
-# Run the server
 ./bin/server -config configs/config.yaml
+
+# Or build to current directory
+go build -o server ./cmd/server
+./server -config configs/config.yaml
 
 # Or run directly without building
 make run
@@ -277,6 +279,8 @@ logging:
 
 ```bash
 make build          # Build binary to bin/server
+make build-local    # Build binary to ./server
+go build -o server ./cmd/server  # Direct go build
 ```
 
 ### Testing
