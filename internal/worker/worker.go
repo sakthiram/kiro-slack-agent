@@ -169,8 +169,10 @@ func (w *Worker) processTaskInternal(ctx context.Context, task *queue.TaskWork, 
 		return fmt.Errorf("failed to get issue details: %w", err)
 	}
 
-	// Extract thread timestamp from labels for conversation history
+	// Extract labels for conversation context and chaining
 	threadTS := extractLabelValue(issue.Labels, "thread:")
+	channelID := extractLabelValue(issue.Labels, "channel:")
+	userID := extractLabelValue(issue.Labels, "user:")
 
 	// Get the issue details to build the prompt
 	messages, err := w.beadsMgr.GetConversationContext(ctx, task.UserID, task.IssueID)
@@ -180,15 +182,27 @@ func (w *Worker) processTaskInternal(ctx context.Context, task *queue.TaskWork, 
 
 	// Build the prompt from the latest message (the task description)
 	if len(messages) == 0 {
-		return fmt.Errorf("no messages found for issue %s", task.IssueID)
+		// No messages - this is an agent-created task without user input
+		// Close it gracefully instead of retrying forever
+		w.logger.Warn("closing task with no messages (agent-created)",
+			zap.String("issue_id", task.IssueID),
+		)
+		if err := w.beadsMgr.CloseIssue(ctx, task.UserID, task.IssueID,
+			"Auto-closed: no user message found (agent-created task)"); err != nil {
+			w.logger.Error("failed to close orphan task",
+				zap.String("issue_id", task.IssueID),
+				zap.Error(err),
+			)
+		}
+		return nil // Success - task handled, no retry needed
 	}
 
 	// Use the last user message as the prompt
 	var prompt string
 	for i := len(messages) - 1; i >= 0; i-- {
 		if messages[i].Role == "user" {
-			// Build enhanced prompt with bd instructions, task context, and thread history
-			prompt = buildAgentPrompt(task.IssueID, messages[i].Content, threadTS)
+			// Build enhanced prompt with bd instructions, task context, thread history, and labels
+			prompt = buildAgentPrompt(task.IssueID, messages[i].Content, threadTS, channelID, userID)
 			break
 		}
 	}
@@ -216,6 +230,12 @@ func (w *Worker) processTaskInternal(ctx context.Context, task *queue.TaskWork, 
 	//   bd comment <issue_id> "[agent] <final answer>"
 	// Only [agent] prefixed comments get synced to Slack.
 
+	// Register task for sync if it has thread info and isn't already registered
+	// (agent-created tasks won't be pre-registered like user-created ones)
+	if task.ThreadInfo != nil && !w.syncer.IsRegistered(task.IssueID) {
+		w.syncer.RegisterIssue(task.IssueID, task.UserID, task.ThreadInfo)
+	}
+
 	// Trigger comment synchronization to Slack
 	w.logger.Debug("triggering comment sync",
 		zap.String("issue_id", task.IssueID),
@@ -233,7 +253,7 @@ func (w *Worker) processTaskInternal(ctx context.Context, task *queue.TaskWork, 
 }
 
 // buildAgentPrompt creates a comprehensive prompt for the kiro agent with bd instructions.
-func buildAgentPrompt(issueID, userMessage, threadTS string) string {
+func buildAgentPrompt(issueID, userMessage, threadTS, channelID, userID string) string {
 	// Build thread history section if we have a thread timestamp
 	threadHistorySection := ""
 	if threadTS != "" {
@@ -253,8 +273,40 @@ Use this context to provide relevant, consistent answers!
 `, threadTS)
 	}
 
+	// Build labels string for new issues
+	labelsSection := ""
+	if threadTS != "" && channelID != "" && userID != "" {
+		labelsSection = fmt.Sprintf(`
+## Creating Sub-Tasks (IMPORTANT!)
+
+If you need to create new issues/tasks during your work, **ALWAYS add labels and description** to chain them to this conversation:
+
+bd create "task title" -t task -d "detailed description of what needs to be done" -l "thread:%s,channel:%s,user:%s"
+
+This ensures:
+- Sub-tasks have context for the next agent to work on
+- Sub-tasks appear in the same Slack thread
+- Future agents can find related work
+- The conversation history stays connected
+
+## Dependencies (IMPORTANT!)
+
+If a new task BLOCKS this task from completing:
+1. Create the blocking task with labels (as shown above)
+2. Add it as a blocker dependency: bd dep add %s <new-task-id> --type blocks
+3. Reopen this task so it can be picked up later: bd update %s --status open
+4. Add a comment explaining: bd comment %s "[agent] ⏸️ Blocked by <new-task-id>: <reason>"
+5. Do NOT close this task - it will be re-processed after the blocker is resolved
+
+Only close this task when ALL work is complete and no blockers remain.
+`, threadTS, channelID, userID, issueID, issueID, issueID)
+	}
+
 	return fmt.Sprintf(`BEFORE ANYTHING ELSE: run 'bd onboard' and follow the instructions.
-%s
+
+## FIRST: Claim This Task
+bd update %s --status in_progress
+%s%s
 ## Your Task (Issue: %s)
 %s
 
@@ -280,8 +332,8 @@ bd comment %s "[agent] *Analysis Complete*
 - ANSI codes or terminal formatting
 - Anything over 2000 characters
 
-**When done, close the issue:**
-bd close %s --reason "brief summary"`, threadHistorySection, issueID, userMessage, issueID, issueID, issueID)
+**When done (and no blockers), close the issue:**
+bd close %s --reason "brief summary"`, issueID, threadHistorySection, labelsSection, issueID, userMessage, issueID, issueID, issueID)
 }
 
 // extractLabelValue extracts the value from a label with the given prefix.

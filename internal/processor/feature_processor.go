@@ -14,7 +14,7 @@ import (
 type BeadsManager interface {
 	EnsureUserDir(ctx context.Context, userID string) (string, error)
 	CreateFeature(ctx context.Context, userID string, thread *beads.ThreadInfo, title, description string) (*beads.Issue, error)
-	CreateTask(ctx context.Context, userID, parentID string, thread *beads.ThreadInfo, title string) (*beads.Issue, error)
+	CreateTask(ctx context.Context, userID, parentID string, thread *beads.ThreadInfo, title, desc string) (*beads.Issue, error)
 	FindThreadIssue(ctx context.Context, userID string, thread *beads.ThreadInfo) (*beads.Issue, error)
 	UpdateThreadIssue(ctx context.Context, userID, issueID, role, message string) error
 }
@@ -154,8 +154,8 @@ func (p *FeatureProcessor) ProcessThreadReply(ctx context.Context, msg *slack.Me
 	// Extract title from message
 	title := extractTitle(msg.Text)
 
-	// Create Task issue under parent Feature
-	task, err := p.beadsMgr.CreateTask(ctx, msg.UserID, parentIssue.ID, replyThread, title)
+	// Create Task issue under parent Feature (with msg.Text as description)
+	task, err := p.beadsMgr.CreateTask(ctx, msg.UserID, parentIssue.ID, replyThread, title, msg.Text)
 	if err != nil {
 		logger.Error("failed to create task",
 			zap.String("parent_id", parentIssue.ID),

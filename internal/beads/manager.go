@@ -516,7 +516,7 @@ func (m *Manager) CreateFeature(ctx context.Context, userID string, thread *Thre
 }
 
 // CreateTask runs `bd create -t task --parent <parentID>` to create a new task under a parent feature.
-func (m *Manager) CreateTask(ctx context.Context, userID, parentID string, thread *ThreadInfo, title string) (*Issue, error) {
+func (m *Manager) CreateTask(ctx context.Context, userID, parentID string, thread *ThreadInfo, title, desc string) (*Issue, error) {
 	userDir := m.GetUserDir(userID)
 
 	// Build labels argument
@@ -524,6 +524,9 @@ func (m *Manager) CreateTask(ctx context.Context, userID, parentID string, threa
 
 	// Create task with bd create
 	args := []string{"create", title, "-t", "task", "--parent", parentID, "--json"}
+	if desc != "" {
+		args = append(args, "-d", desc)
+	}
 	if labels != "" {
 		args = append(args, "-l", labels)
 	}
@@ -580,6 +583,27 @@ func (m *Manager) AddAgentComment(ctx context.Context, userID, issueID, content 
 			zap.Error(err),
 		)
 		return fmt.Errorf("failed to add agent comment: %w", err)
+	}
+
+	return nil
+}
+
+// CloseIssue runs `bd close <id> --reason <reason>` to close an issue.
+func (m *Manager) CloseIssue(ctx context.Context, userID, issueID, reason string) error {
+	userDir := m.GetUserDir(userID)
+
+	cmd := exec.CommandContext(ctx, bdBinaryPath, "close", issueID, "--reason", reason)
+	cmd.Dir = userDir
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		m.logger.Error("failed to close issue",
+			zap.String("user_id", userID),
+			zap.String("issue_id", issueID),
+			zap.String("output", string(output)),
+			zap.Error(err),
+		)
+		return fmt.Errorf("failed to close issue: %w", err)
 	}
 
 	return nil

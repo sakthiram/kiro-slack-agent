@@ -17,6 +17,7 @@ import (
 type BeadsManager interface {
 	GetUserDir(userID string) string
 	EnsureUserDir(ctx context.Context, userID string) (string, error)
+	CloseIssue(ctx context.Context, userID, issueID, reason string) error
 }
 
 // Poller periodically runs `bd ready` to find tasks ready for processing
@@ -166,6 +167,22 @@ func (p *Poller) pollUserTasks(ctx context.Context, userID string) error {
 
 	// Add each ready task to the queue
 	for _, task := range readyTasks {
+		// Close tasks without description - these are agent-created tasks
+		// that have no user message to process
+		if task.Description == "" {
+			p.logger.Info("closing task without description (agent-created)",
+				zap.String("issue_id", task.ID),
+			)
+			if err := p.beadsMgr.CloseIssue(ctx, userID, task.ID,
+				"Auto-closed: no user message found (agent-created task)"); err != nil {
+				p.logger.Error("failed to close task without description",
+					zap.String("issue_id", task.ID),
+					zap.Error(err),
+				)
+			}
+			continue
+		}
+
 		work := &TaskWork{
 			IssueID:   task.ID,
 			UserID:    userID,

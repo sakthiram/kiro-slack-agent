@@ -63,6 +63,11 @@ func (s *CommentSyncer) RegisterIssue(issueID string, userID string, thread *bea
 	)
 }
 
+// IsRegistered checks if an issue is registered for sync.
+func (s *CommentSyncer) IsRegistered(issueID string) bool {
+	return s.tracker.GetState(issueID) != nil
+}
+
 // Unregister removes an issue from synchronization tracking.
 // This should be called when an issue is closed.
 func (s *CommentSyncer) Unregister(issueID string) {
