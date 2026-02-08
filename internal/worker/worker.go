@@ -114,6 +114,11 @@ func (w *Worker) processTask(ctx context.Context, task *queue.TaskWork) {
 		Duration:    0,
 	}
 
+	// React: swap 👀 → ⏳ to indicate processing started
+	if task.ThreadInfo != nil && task.ThreadInfo.MessageTS != "" {
+		w.syncer.ReactTo(ctx, task.ThreadInfo.ChannelID, task.ThreadInfo.MessageTS, "hourglass_flowing_sand", "eyes")
+	}
+
 	// Process the task and update result
 	err := w.processTaskInternal(taskCtx, task, result)
 
@@ -136,6 +141,15 @@ func (w *Worker) processTask(ctx context.Context, task *queue.TaskWork) {
 			zap.Duration("duration", result.Duration),
 		)
 		result.Success = true
+	}
+
+	// React: swap ⏳ → ✅ or ❌
+	if task.ThreadInfo != nil && task.ThreadInfo.MessageTS != "" {
+		emoji := "white_check_mark"
+		if !result.Success {
+			emoji = "x"
+		}
+		w.syncer.ReactTo(ctx, task.ThreadInfo.ChannelID, task.ThreadInfo.MessageTS, emoji, "hourglass_flowing_sand")
 	}
 
 	// Record the result — must happen before retry Add() to clear pending map

@@ -248,44 +248,25 @@ func (h *Handler) handleWithFeatureProcessor(msg *MessageEvent, logger *zap.Logg
 	// Process async in goroutine
 	go func() {
 		var err error
-		var ackMessage string
 
 		if isMainPost {
 			// Main post - create Feature issue
 			logger.Info("routing to ProcessMainPost")
 			err = h.featureProcessor.ProcessMainPost(ctx, msg)
-			ackMessage = "📝 Received! Working on it..."
 		} else {
 			// Thread reply - create Task issue
 			logger.Info("routing to ProcessThreadReply")
 			err = h.featureProcessor.ProcessThreadReply(ctx, msg)
-			ackMessage = "👍 Got it! Processing..."
 		}
 
 		if err != nil {
 			logger.Error("feature processor error", zap.Error(err), zap.Bool("is_main_post", isMainPost))
-			// Post error message to Slack - always in thread
-			errMsg := "❌ Sorry, I encountered an error processing your message."
-			errThreadTS := msg.ThreadTS
-			if isMainPost {
-				errThreadTS = msg.MessageTS
-			}
-			_, _ = h.client.PostMessage(ctx, msg.ChannelID, errMsg, WithThreadTS(errThreadTS))
+			_ = h.client.AddReaction(ctx, msg.ChannelID, msg.MessageTS, "x")
 			return
 		}
 
-		// Post acknowledgment message - always in thread
-		var threadTS string
-		if isMainPost {
-			// For main posts, reply in the thread of the post itself
-			threadTS = msg.MessageTS
-		} else {
-			// For thread replies, reply in the same thread
-			threadTS = msg.ThreadTS
-		}
-		if _, err := h.client.PostMessage(ctx, msg.ChannelID, ackMessage, WithThreadTS(threadTS)); err != nil {
-			logger.Error("failed to post acknowledgment", zap.Error(err))
-		}
+		// React to user's message to acknowledge
+		_ = h.client.AddReaction(ctx, msg.ChannelID, msg.MessageTS, "eyes")
 
 		logger.Info("feature processing initiated", zap.Bool("is_main_post", isMainPost))
 	}()

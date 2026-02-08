@@ -51,6 +51,16 @@ func NewCommentSyncer(
 	}
 }
 
+// ReactTo adds an emoji reaction to a message, removing an old one if specified.
+func (s *CommentSyncer) ReactTo(ctx context.Context, channelID, messageTS, emoji, removeEmoji string) {
+	if removeEmoji != "" {
+		_ = s.slackClient.RemoveReaction(ctx, channelID, messageTS, removeEmoji)
+	}
+	if err := s.slackClient.AddReaction(ctx, channelID, messageTS, emoji); err != nil {
+		s.logger.Debug("failed to add reaction", zap.String("emoji", emoji), zap.Error(err))
+	}
+}
+
 // RegisterIssue registers a new issue for comment synchronization.
 // This should be called when a new issue is created from a Slack thread.
 func (s *CommentSyncer) RegisterIssue(issueID string, userID string, thread *beads.ThreadInfo) {
