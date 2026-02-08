@@ -84,8 +84,19 @@ func (r *KiroRunner) Run(ctx context.Context, workDir, prompt string) (string, e
 		}
 	case <-ctx.Done():
 		// Kill entire process group (negative PID)
-		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		<-done // wait for process to exit after kill
+		pgid := cmd.Process.Pid
+		_ = syscall.Kill(-pgid, syscall.SIGKILL)
+		<-done // wait for direct child to exit
+
+		// On macOS, grandchild processes may linger in stopped state.
+		// Retry kill to ensure full cleanup.
+		for i := 0; i < 3; i++ {
+			if err := syscall.Kill(-pgid, syscall.SIGKILL); err != nil {
+				break // process group no longer exists
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+
 		r.logger.Warn("kiro-cli killed by timeout",
 			zap.String("work_dir", workDir),
 			zap.String("output", buf.String()),
