@@ -40,7 +40,7 @@ func findBdBinary() string {
 
 // bdCmd creates an exec.Cmd for bd with --no-daemon appended automatically.
 func bdCmd(ctx context.Context, args ...string) *exec.Cmd {
-	return bdCmd(ctx, append(args, "--no-daemon")...)
+	return exec.CommandContext(ctx, bdBinaryPath, append(args, "--no-daemon")...)
 }
 
 // Manager handles per-user beads database operations for tracking Slack thread conversations.
