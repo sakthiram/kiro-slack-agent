@@ -171,6 +171,7 @@ func (m *Manager) FindThreadIssue(ctx context.Context, userID string, thread *Th
 	// Use bd list with label filter to find the issue
 	// bd list --label thread:<ts> --json --allow-stale
 	cmd := exec.CommandContext(ctx, bdBinaryPath, "list",
+		"--all",
 		"--label", "thread:"+thread.ThreadTS,
 		"--json", "--allow-stale",
 	)

@@ -130,22 +130,6 @@ func (w *Worker) processTask(ctx context.Context, task *queue.TaskWork) {
 		result.Success = false
 		result.Error = err
 
-		// Retry logic
-		if task.Retries < task.MaxRetries {
-			w.logger.Info("retrying task",
-				zap.String("issue_id", task.IssueID),
-				zap.Int("retry_attempt", task.Retries+1),
-				zap.Int("max_retries", task.MaxRetries),
-			)
-			task.Retries++
-			// Re-add to queue for retry
-			if addErr := w.queue.Add(ctx, task); addErr != nil {
-				w.logger.Error("failed to re-add task for retry",
-					zap.String("issue_id", task.IssueID),
-					zap.Error(addErr),
-				)
-			}
-		}
 	} else {
 		w.logger.Info("task completed successfully",
 			zap.String("issue_id", task.IssueID),
@@ -154,8 +138,24 @@ func (w *Worker) processTask(ctx context.Context, task *queue.TaskWork) {
 		result.Success = true
 	}
 
-	// Record the result
+	// Record the result — must happen before retry Add() to clear pending map
 	w.queue.Complete(result)
+
+	// Retry logic (after Complete so pending map is cleared for re-add)
+	if !result.Success && task.Retries < task.MaxRetries {
+		w.logger.Info("retrying task",
+			zap.String("issue_id", task.IssueID),
+			zap.Int("retry_attempt", task.Retries+1),
+			zap.Int("max_retries", task.MaxRetries),
+		)
+		task.Retries++
+		if addErr := w.queue.Add(ctx, task); addErr != nil {
+			w.logger.Error("failed to re-add task for retry",
+				zap.String("issue_id", task.IssueID),
+				zap.Error(addErr),
+			)
+		}
+	}
 }
 
 // processTaskInternal handles the actual task processing logic.

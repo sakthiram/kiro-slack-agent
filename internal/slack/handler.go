@@ -196,7 +196,9 @@ func (h *Handler) handleMessage(ev *slackevents.MessageEvent) {
 		zap.String("message_ts", ev.TimeStamp),
 	)
 
-	logger.Info("received direct message")
+	logger.Info("received direct message",
+		zap.String("thread_ts", ev.ThreadTimeStamp),
+	)
 
 	msg := ParseDirectMessage(ev)
 
@@ -235,6 +237,13 @@ func (h *Handler) handleWithFeatureProcessor(msg *MessageEvent, logger *zap.Logg
 
 	// Determine if this is a main post or thread reply
 	isMainPost := msg.ThreadTS == "" || msg.ThreadTS == msg.MessageTS
+
+	logger.Debug("routing message",
+		zap.String("thread_ts", msg.ThreadTS),
+		zap.String("message_ts", msg.MessageTS),
+		zap.Bool("is_dm", msg.IsDM),
+		zap.Bool("is_main_post", isMainPost),
+	)
 
 	// Process async in goroutine
 	go func() {

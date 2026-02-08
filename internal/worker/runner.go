@@ -1,11 +1,13 @@
 package worker
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/sakthiram/kiro-slack-agent/internal/config"
@@ -30,6 +32,7 @@ func NewKiroRunner(cfg *config.KiroConfig, logger *zap.Logger) *KiroRunner {
 
 // Run executes kiro-cli in non-interactive mode and returns the response.
 // The command is run with --trust-all-tools, --no-interactive, and --wrap never flags.
+// It kills the entire process group on timeout to prevent orphaned child processes.
 func (r *KiroRunner) Run(ctx context.Context, workDir, prompt string) (string, error) {
 	// Create a timeout context if not already set
 	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
@@ -44,34 +47,53 @@ func (r *KiroRunner) Run(ctx context.Context, workDir, prompt string) (string, e
 		zap.Duration("timeout", r.responseTimeout),
 	)
 
-	// Build the command
-	cmd := exec.CommandContext(ctx, r.binaryPath,
+	cmd := exec.Command(r.binaryPath,
 		"chat",
 		"--trust-all-tools",
 		"--no-interactive",
 		"--wrap", "never",
 		prompt,
 	)
-
-	// Set working directory
 	cmd.Dir = workDir
-
-	// Set environment variables
-	// TERM=dumb ensures no fancy terminal features are attempted
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Env = append(os.Environ(), "TERM=dumb")
 
-	// Capture stdout and stderr
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		r.logger.Error("kiro-cli execution failed",
-			zap.String("work_dir", workDir),
-			zap.Error(err),
-			zap.String("output", string(output)),
-		)
-		return "", fmt.Errorf("kiro-cli execution failed: %w (output: %s)", err, string(output))
+	var buf bytes.Buffer
+	cmd.Stdout = &buf
+	cmd.Stderr = &buf
+
+	if err := cmd.Start(); err != nil {
+		return "", fmt.Errorf("failed to start kiro-cli: %w", err)
 	}
 
-	response := strings.TrimSpace(string(output))
+	// Watch for context cancellation and kill the entire process group
+	done := make(chan error, 1)
+	go func() {
+		done <- cmd.Wait()
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			r.logger.Error("kiro-cli execution failed",
+				zap.String("work_dir", workDir),
+				zap.Error(err),
+				zap.String("output", buf.String()),
+			)
+			return "", fmt.Errorf("kiro-cli execution failed: %w (output: %s)", err, buf.String())
+		}
+	case <-ctx.Done():
+		// Kill entire process group (negative PID)
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		<-done // wait for process to exit after kill
+		r.logger.Warn("kiro-cli killed by timeout",
+			zap.String("work_dir", workDir),
+			zap.String("output", buf.String()),
+		)
+		return "", fmt.Errorf("kiro-cli timed out: %w", ctx.Err())
+	}
+
+	response := strings.TrimSpace(buf.String())
 
 	r.logger.Debug("kiro-cli execution completed",
 		zap.String("work_dir", workDir),
