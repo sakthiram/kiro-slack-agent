@@ -305,6 +305,9 @@ If a new task BLOCKS this task from completing:
 
 	return fmt.Sprintf(`BEFORE ANYTHING ELSE: run 'bd init --stealth' and follow the instructions.
 
+## Context
+Channel: %s | Thread: %s | User: %s
+
 ## FIRST: Claim This Task
 bd update %s --status in_progress --no-daemon
 %s%s
@@ -327,7 +330,7 @@ bd comment %s "[agent] <your concise answer here>" --no-daemon
 - Anything over 2000 characters
 
 **When done (and no blockers), close the issue:**
-bd close %s --reason "brief summary" --no-daemon`, issueID, threadHistorySection, labelsSection, issueID, userMessage, issueID, issueID)
+bd close %s --reason "brief summary" --no-daemon`, channelID, threadTS, userID, issueID, threadHistorySection, labelsSection, issueID, userMessage, issueID, issueID)
 }
 
 // extractLabelValue extracts the value from a label with the given prefix.
