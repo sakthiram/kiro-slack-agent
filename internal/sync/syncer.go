@@ -134,8 +134,8 @@ func (s *CommentSyncer) SyncIssue(ctx context.Context, issueID string) error {
 			continue // Already synced in beads
 		}
 
-		// Post the comment to Slack
-		content := msg.Content
+		// Post the comment to Slack with task ID footer
+		content := msg.Content + fmt.Sprintf("\n\n> 🏷️ _task: `%s` — reference this ID for follow-ups_", issueID)
 		_, err := s.slackClient.PostMessage(
 			ctx,
 			state.ChannelID,
