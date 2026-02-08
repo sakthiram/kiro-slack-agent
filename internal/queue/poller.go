@@ -224,6 +224,8 @@ func extractThreadInfo(labels []string) *beads.ThreadInfo {
 			info.ChannelID = label[8:]
 		} else if len(label) > 5 && label[:5] == "user:" {
 			info.UserID = label[5:]
+		} else if len(label) > 4 && label[:4] == "msg:" {
+			info.MessageTS = label[4:]
 		}
 	}
 
