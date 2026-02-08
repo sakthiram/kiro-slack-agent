@@ -201,8 +201,16 @@ func (w *Worker) processTaskInternal(ctx context.Context, task *queue.TaskWork, 
 	var prompt string
 	for i := len(messages) - 1; i >= 0; i-- {
 		if messages[i].Role == "user" {
-			// Build enhanced prompt with bd instructions, task context, thread history, and labels
-			prompt = buildAgentPrompt(task.IssueID, messages[i].Content, threadTS, channelID, userID)
+			// Fetch compact thread history if this is part of a thread
+			var threadHistory string
+			if threadTS != "" {
+				history, _, err := w.beadsMgr.GetThreadHistory(ctx, task.UserID, threadTS, 5)
+				if err != nil {
+					w.logger.Warn("failed to get thread history", zap.Error(err))
+				}
+				threadHistory = history
+			}
+			prompt = buildAgentPrompt(task.IssueID, messages[i].Content, threadTS, channelID, userID, threadHistory)
 			break
 		}
 	}
@@ -253,23 +261,24 @@ func (w *Worker) processTaskInternal(ctx context.Context, task *queue.TaskWork, 
 }
 
 // buildAgentPrompt creates a comprehensive prompt for the kiro agent with bd instructions.
-func buildAgentPrompt(issueID, userMessage, threadTS, channelID, userID string) string {
-	// Build thread history section if we have a thread timestamp
+func buildAgentPrompt(issueID, userMessage, threadTS, channelID, userID, threadHistory string) string {
+	// Build thread history section
 	threadHistorySection := ""
-	if threadTS != "" {
+	if threadHistory != "" {
 		threadHistorySection = fmt.Sprintf(`
-## Conversation History (IMPORTANT!)
+## Conversation History
+%s
+For full history: bd list --all --label thread:%s --json --allow-stale --no-daemon
+`, threadHistory, threadTS)
+	} else if threadTS != "" {
+		threadHistorySection = fmt.Sprintf(`
+## Conversation History
 
 This task is part of an ongoing conversation thread. To get context from previous work:
 
-bd list --label thread:%s --json --allow-stale
+bd list --all --label thread:%s --json --allow-stale --no-daemon
 
-Review closed issues' comments to understand:
-- What the user previously asked
-- What analysis was already done
-- What solutions/queries were provided
-
-Use this context to provide relevant, consistent answers!
+Review closed issues' comments to understand what was previously discussed.
 `, threadTS)
 	}
 
@@ -277,54 +286,39 @@ Use this context to provide relevant, consistent answers!
 	labelsSection := ""
 	if threadTS != "" && channelID != "" && userID != "" {
 		labelsSection = fmt.Sprintf(`
-## Creating Sub-Tasks (IMPORTANT!)
+## Creating Sub-Tasks
 
-If you need to create new issues/tasks during your work, **ALWAYS add labels and description** to chain them to this conversation:
+If you need to create new issues/tasks, **ALWAYS add labels and description** to chain them to this conversation:
 
-bd create "task title" -t task -d "detailed description of what needs to be done" -l "thread:%s,channel:%s,user:%s"
+bd create "task title" -t task -d "description" -l "thread:%s,channel:%s,user:%s" --no-daemon
 
-This ensures:
-- Sub-tasks have context for the next agent to work on
-- Sub-tasks appear in the same Slack thread
-- Future agents can find related work
-- The conversation history stays connected
-
-## Dependencies (IMPORTANT!)
+## Dependencies
 
 If a new task BLOCKS this task from completing:
 1. Create the blocking task with labels (as shown above)
-2. Add it as a blocker dependency: bd dep add %s <new-task-id> --type blocks
-3. Reopen this task so it can be picked up later: bd update %s --status open
-4. Add a comment explaining: bd comment %s "[agent] ⏸️ Blocked by <new-task-id>: <reason>"
+2. Add blocker: bd dep add %s <new-task-id> --type blocks --no-daemon
+3. Reopen this task: bd update %s --status open --no-daemon
+4. Comment: bd comment %s "[agent] ⏸️ Blocked by <new-task-id>: <reason>" --no-daemon
 5. Do NOT close this task - it will be re-processed after the blocker is resolved
-
-Only close this task when ALL work is complete and no blockers remain.
 `, threadTS, channelID, userID, issueID, issueID, issueID)
 	}
 
-	return fmt.Sprintf(`BEFORE ANYTHING ELSE: run 'bd onboard' and follow the instructions.
+	return fmt.Sprintf(`BEFORE ANYTHING ELSE: run 'bd init --stealth' and follow the instructions.
 
 ## FIRST: Claim This Task
-bd update %s --status in_progress
+bd update %s --status in_progress --no-daemon
 %s%s
-## Your Task (Issue: %s)
+## Current Request (Issue: %s)
 %s
 
-## CRITICAL: How to Respond
+## How to Respond
 
 Your response to the user is ONLY what you write via bd comment with [agent] prefix.
 Everything else you do (tool calls, thinking, exploration) is NOT sent to Slack.
 
-**When you have your final answer, run this command:**
+**When you have your final answer:**
 
-bd comment %s "[agent] <your concise answer here>"
-
-Example of a GOOD response:
-bd comment %s "[agent] *Analysis Complete*
-
-• Found 42 privacy events in the data
-• 30 with privacy ON, 12 with privacy OFF
-• Query saved to /tmp/results.csv"
+bd comment %s "[agent] <your concise answer here>" --no-daemon
 
 **DO NOT** include:
 - Your exploration/thinking process
@@ -333,7 +327,7 @@ bd comment %s "[agent] *Analysis Complete*
 - Anything over 2000 characters
 
 **When done (and no blockers), close the issue:**
-bd close %s --reason "brief summary"`, issueID, threadHistorySection, labelsSection, issueID, userMessage, issueID, issueID, issueID)
+bd close %s --reason "brief summary" --no-daemon`, issueID, threadHistorySection, labelsSection, issueID, userMessage, issueID, issueID)
 }
 
 // extractLabelValue extracts the value from a label with the given prefix.

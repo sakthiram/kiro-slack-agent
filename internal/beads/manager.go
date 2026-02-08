@@ -38,6 +38,11 @@ func findBdBinary() string {
 	return "bd"
 }
 
+// bdCmd creates an exec.Cmd for bd with --no-daemon appended automatically.
+func bdCmd(ctx context.Context, args ...string) *exec.Cmd {
+	return bdCmd(ctx, append(args, "--no-daemon")...)
+}
+
 // Manager handles per-user beads database operations for tracking Slack thread conversations.
 type Manager struct {
 	sessionsBasePath   string
@@ -73,7 +78,7 @@ func (m *Manager) SyncDB(ctx context.Context, userID string) error {
 
 // syncDBUnlocked runs sync without acquiring locks (for internal use when lock is held)
 func (m *Manager) syncDBUnlocked(ctx context.Context, userDir string) error {
-	cmd := exec.CommandContext(ctx, bdBinaryPath, "sync", "--import-only")
+	cmd := bdCmd(ctx, "sync", "--import-only")
 	cmd.Dir = userDir
 
 	output, err := cmd.CombinedOutput()
@@ -107,7 +112,7 @@ func (m *Manager) EnsureUserDir(ctx context.Context, userID string) (string, err
 	// Check if .beads directory exists AND is properly initialized
 	if _, err := os.Stat(beadsDir); err == nil {
 		// Verify beads has issue_prefix configured (required for creating issues)
-		checkCmd := exec.CommandContext(ctx, bdBinaryPath, "config", "get", "issue_prefix")
+		checkCmd := bdCmd(ctx, "config", "get", "issue_prefix")
 		checkCmd.Dir = userDir
 		if checkOutput, checkErr := checkCmd.CombinedOutput(); checkErr == nil && len(strings.TrimSpace(string(checkOutput))) > 0 {
 			// Beads is properly initialized with prefix, sync and mark as initialized
@@ -136,7 +141,7 @@ func (m *Manager) EnsureUserDir(ctx context.Context, userID string) (string, err
 	}
 
 	// Initialize beads with bd init
-	cmd := exec.CommandContext(ctx, bdBinaryPath, "init", "--prefix", m.issuePrefix+userID)
+	cmd := bdCmd(ctx, "init", "--stealth", "--prefix", m.issuePrefix+userID)
 	cmd.Dir = userDir
 
 	output, err := cmd.CombinedOutput()
@@ -170,7 +175,7 @@ func (m *Manager) FindThreadIssue(ctx context.Context, userID string, thread *Th
 
 	// Use bd list with label filter to find the issue
 	// bd list --label thread:<ts> --json --allow-stale
-	cmd := exec.CommandContext(ctx, bdBinaryPath, "list",
+	cmd := bdCmd(ctx, "list",
 		"--all",
 		"--label", "thread:"+thread.ThreadTS,
 		"--json", "--allow-stale",
@@ -220,7 +225,7 @@ func (m *Manager) CreateThreadIssue(ctx context.Context, userID string, thread *
 	labels := strings.Join(thread.Labels(), ",")
 
 	// Create issue with bd create
-	cmd := exec.CommandContext(ctx, bdBinaryPath, "create",
+	cmd := bdCmd(ctx, "create",
 		title,
 		"-t", "task",
 		"-p", "2",
@@ -264,7 +269,7 @@ func (m *Manager) UpdateThreadIssue(ctx context.Context, userID, issueID, role, 
 	comment := fmt.Sprintf("[%s] %s", role, message)
 
 	// Add comment with bd comment
-	cmd := exec.CommandContext(ctx, bdBinaryPath, "comment", issueID, comment)
+	cmd := bdCmd(ctx, "comment", issueID, comment)
 	cmd.Dir = userDir
 
 	output, err := cmd.CombinedOutput()
@@ -287,7 +292,7 @@ func (m *Manager) GetConversationContext(ctx context.Context, userID, issueID st
 	userDir := m.GetUserDir(userID)
 
 	// Get issue details with comments using bd show
-	cmd := exec.CommandContext(ctx, bdBinaryPath, "show", issueID, "--json", "--allow-stale")
+	cmd := bdCmd(ctx, "show", issueID, "--json", "--allow-stale")
 	cmd.Dir = userDir
 
 	output, err := cmd.Output()
@@ -333,7 +338,84 @@ func (m *Manager) GetConversationContext(ctx context.Context, userID, issueID st
 	return messages, nil
 }
 
-// parseComment extracts role and content from a comment.
+// GetThreadHistory returns a compact summary of recent turns in a thread.
+// Returns the last N user/agent exchange pairs, with agent responses truncated.
+func (m *Manager) GetThreadHistory(ctx context.Context, userID, threadTS string, maxTurns int) (string, int, error) {
+	userDir := m.GetUserDir(userID)
+
+	cmd := bdCmd(ctx, "list", "--all", "--label", "thread:"+threadTS, "--json", "--allow-stale")
+	cmd.Dir = userDir
+
+	output, err := cmd.Output()
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+			return "", 0, nil
+		}
+		return "", 0, err
+	}
+
+	var issues []Issue
+	if err := json.Unmarshal(output, &issues); err != nil {
+		return "", 0, nil
+	}
+
+	if len(issues) == 0 {
+		return "", 0, nil
+	}
+
+	// Collect turns: each issue = one turn (user request + agent response)
+	type turn struct {
+		user  string
+		agent string
+	}
+	var turns []turn
+
+	for _, issue := range issues {
+		t := turn{user: issue.Description}
+		for _, c := range issue.Comments {
+			if strings.HasPrefix(c.Content, "[agent]") {
+				t.agent = strings.TrimSpace(strings.TrimPrefix(c.Content, "[agent]"))
+			}
+		}
+		if t.user != "" {
+			turns = append(turns, t)
+		}
+	}
+
+	totalTurns := len(turns)
+	if totalTurns <= 1 {
+		return "", totalTurns, nil // no history to show for first turn
+	}
+
+	// Exclude the last turn (that's the current request)
+	history := turns[:totalTurns-1]
+
+	// Take only the last N turns
+	if len(history) > maxTurns {
+		history = history[len(history)-maxTurns:]
+	}
+
+	// Format compact summary
+	var sb strings.Builder
+	shown := len(history)
+	total := totalTurns - 1 // exclude current
+	if shown < total {
+		fmt.Fprintf(&sb, "(%d of %d prior turns shown, oldest omitted)\n", shown, total)
+	}
+	for i, t := range history {
+		turnNum := total - shown + i + 1
+		fmt.Fprintf(&sb, "[Turn %d] User: %s\n", turnNum, t.user)
+		if t.agent != "" {
+			agentText := t.agent
+			if len(agentText) > 200 {
+				agentText = agentText[:200] + "... (truncated)"
+			}
+			fmt.Fprintf(&sb, "[Turn %d] Agent: %s\n", turnNum, agentText)
+		}
+	}
+
+	return sb.String(), totalTurns, nil
+}
 // Comments are formatted as "[role] content".
 func parseComment(comment Comment) Message {
 	content := comment.Content
@@ -362,7 +444,7 @@ func parseComment(comment Comment) Message {
 func (m *Manager) CloseThreadIssue(ctx context.Context, userID, issueID, reason string) error {
 	userDir := m.GetUserDir(userID)
 
-	cmd := exec.CommandContext(ctx, bdBinaryPath, "close", issueID, "--reason", reason)
+	cmd := bdCmd(ctx, "close", issueID, "--reason", reason)
 	cmd.Dir = userDir
 
 	output, err := cmd.CombinedOutput()
@@ -412,7 +494,7 @@ func (m *Manager) GetReadyTasks(ctx context.Context, userID string) ([]ReadyTask
 	userDir := m.GetUserDir(userID)
 
 	// Use --allow-stale to prevent failures when db is out of sync
-	cmd := exec.CommandContext(ctx, bdBinaryPath, "ready", "--json", "--allow-stale")
+	cmd := bdCmd(ctx, "ready", "--json", "--allow-stale")
 	cmd.Dir = userDir
 
 	output, err := cmd.Output()
@@ -452,7 +534,7 @@ func (m *Manager) GetReadyTasks(ctx context.Context, userID string) ([]ReadyTask
 func (m *Manager) UpdateTaskStatus(ctx context.Context, userID, issueID, status string) error {
 	userDir := m.GetUserDir(userID)
 
-	cmd := exec.CommandContext(ctx, bdBinaryPath, "update", issueID, "--status", status)
+	cmd := bdCmd(ctx, "update", issueID, "--status", status)
 	cmd.Dir = userDir
 
 	output, err := cmd.CombinedOutput()
@@ -486,7 +568,7 @@ func (m *Manager) CreateFeature(ctx context.Context, userID string, thread *Thre
 		args = append(args, "-l", labels)
 	}
 
-	cmd := exec.CommandContext(ctx, bdBinaryPath, args...)
+	cmd := bdCmd(ctx, args...)
 	cmd.Dir = userDir
 
 	output, err := cmd.Output()
@@ -532,7 +614,7 @@ func (m *Manager) CreateTask(ctx context.Context, userID, parentID string, threa
 		args = append(args, "-l", labels)
 	}
 
-	cmd := exec.CommandContext(ctx, bdBinaryPath, args...)
+	cmd := bdCmd(ctx, args...)
 	cmd.Dir = userDir
 
 	output, err := cmd.Output()
@@ -572,7 +654,7 @@ func (m *Manager) AddAgentComment(ctx context.Context, userID, issueID, content 
 	comment := fmt.Sprintf("[agent] %s", content)
 
 	// Add comment with bd comment
-	cmd := exec.CommandContext(ctx, bdBinaryPath, "comment", issueID, comment)
+	cmd := bdCmd(ctx, "comment", issueID, comment)
 	cmd.Dir = userDir
 
 	output, err := cmd.CombinedOutput()
@@ -593,7 +675,7 @@ func (m *Manager) AddAgentComment(ctx context.Context, userID, issueID, content 
 func (m *Manager) CloseIssue(ctx context.Context, userID, issueID, reason string) error {
 	userDir := m.GetUserDir(userID)
 
-	cmd := exec.CommandContext(ctx, bdBinaryPath, "close", issueID, "--reason", reason)
+	cmd := bdCmd(ctx, "close", issueID, "--reason", reason)
 	cmd.Dir = userDir
 
 	output, err := cmd.CombinedOutput()
@@ -614,7 +696,7 @@ func (m *Manager) CloseIssue(ctx context.Context, userID, issueID, reason string
 func (m *Manager) GetIssue(ctx context.Context, userID, issueID string) (*Issue, error) {
 	userDir := m.GetUserDir(userID)
 
-	cmd := exec.CommandContext(ctx, bdBinaryPath, "show", issueID, "--json", "--allow-stale")
+	cmd := bdCmd(ctx, "show", issueID, "--json", "--allow-stale")
 	cmd.Dir = userDir
 
 	output, err := cmd.Output()
@@ -645,7 +727,7 @@ func (m *Manager) GetIssue(ctx context.Context, userID, issueID string) (*Issue,
 func (m *Manager) AddLabel(ctx context.Context, userID, issueID, label string) error {
 	userDir := m.GetUserDir(userID)
 
-	cmd := exec.CommandContext(ctx, bdBinaryPath, "update", issueID, "--add-label", label)
+	cmd := bdCmd(ctx, "update", issueID, "--add-label", label)
 	cmd.Dir = userDir
 
 	output, err := cmd.CombinedOutput()
@@ -695,7 +777,7 @@ func (m *Manager) ListIssuesByStatus(ctx context.Context, userID string, statuse
 	// Build comma-separated status list
 	statusList := strings.Join(statuses, ",")
 
-	cmd := exec.CommandContext(ctx, bdBinaryPath, "list", "--status", statusList, "--json", "--allow-stale")
+	cmd := bdCmd(ctx, "list", "--status", statusList, "--json", "--allow-stale")
 	cmd.Dir = userDir
 
 	output, err := cmd.Output()

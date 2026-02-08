@@ -143,7 +143,7 @@ func (p *Poller) pollUserTasks(ctx context.Context, userID string) error {
 	userDir := p.beadsMgr.GetUserDir(userID)
 
 	// Run bd ready --json to get ready tasks
-	cmd := exec.CommandContext(ctx, p.bdBinaryPath, "ready", "--json")
+	cmd := exec.CommandContext(ctx, p.bdBinaryPath, "ready", "--json", "--no-daemon")
 	cmd.Dir = userDir
 
 	output, err := cmd.Output()
