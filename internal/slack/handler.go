@@ -365,11 +365,7 @@ func (h *Handler) handleReaction(ev *slackevents.ReactionAddedEvent) {
 
 	go func() {
 		ctx := context.Background()
-		// Item.Message.Timestamp is the TS of the message that was reacted to
-		msgTS := ""
-		if ev.Item.Message != nil {
-			msgTS = ev.Item.Message.Timestamp
-		}
+		msgTS := ev.Item.Timestamp
 		if msgTS == "" {
 			return
 		}
@@ -387,10 +383,7 @@ func (h *Handler) handleReactionRemoved(ev *slackevents.ReactionRemovedEvent) {
 
 	go func() {
 		ctx := context.Background()
-		msgTS := ""
-		if ev.Item.Message != nil {
-			msgTS = ev.Item.Message.Timestamp
-		}
+		msgTS := ev.Item.Timestamp
 		if msgTS == "" {
 			return
 		}
