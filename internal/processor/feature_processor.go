@@ -23,6 +23,7 @@ type BeadsManager interface {
 	AddLabel(ctx context.Context, userID, issueID, label string) error
 	RemoveLabel(ctx context.Context, userID, issueID, label string) error
 	FindIssueByStartedTS(ctx context.Context, userID, msgTS string) (*beads.Issue, error)
+	GetIssue(ctx context.Context, userID, issueID string) (*beads.Issue, error)
 	ListIssuesByStatus(ctx context.Context, userID string, statuses []string) ([]*beads.Issue, error)
 	ListUserDirs() []string
 }
