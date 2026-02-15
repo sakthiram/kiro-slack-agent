@@ -139,7 +139,7 @@ func (h *Handler) handleCallbackEventSync(event slackevents.EventsAPIEvent) erro
 		case *slackevents.ReactionRemovedEvent:
 			h.handleReactionRemoved(ev)
 		default:
-			h.logger.Info("unhandled inner event type", zap.String("type", innerEvent.Type))
+			h.logger.Debug("unhandled inner event type", zap.String("type", innerEvent.Type))
 		}
 	default:
 		h.logger.Debug("unhandled events API type", zap.String("type", event.Type))
@@ -344,7 +344,7 @@ func (h *Handler) handleReaction(ev *slackevents.ReactionAddedEvent) {
 		return
 	}
 
-	h.logger.Info("reaction_added event",
+	h.logger.Debug("reaction_added event",
 		zap.String("reaction", ev.Reaction),
 		zap.String("item_type", ev.Item.Type),
 		zap.String("channel", ev.Item.Channel),
