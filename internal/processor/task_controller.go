@@ -201,7 +201,7 @@ func (tc *TaskController) findByStartedTS(ctx context.Context, msgTS string) *be
 // findByID finds an issue across all users by its full ID.
 func (tc *TaskController) findByID(ctx context.Context, taskID string) (string, *beads.Issue) {
 	for _, uid := range tc.beadsMgr.ListUserDirs() {
-		issues, err := tc.beadsMgr.ListIssuesByStatus(ctx, uid, []string{"open", "in_progress"})
+		issues, err := tc.beadsMgr.ListIssuesByStatus(ctx, uid, []string{"open", "in_progress", "closed"})
 		if err != nil {
 			continue
 		}
