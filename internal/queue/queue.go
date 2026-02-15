@@ -122,6 +122,14 @@ func (q *TaskQueue) Pending() int {
 	return len(q.pending)
 }
 
+// HasPending returns true if a task is currently in the queue or being processed.
+func (q *TaskQueue) HasPending(issueID string) bool {
+	q.mu.RLock()
+	defer q.mu.RUnlock()
+	_, exists := q.pending[issueID]
+	return exists
+}
+
 // ResetTask clears the completed attempt count for a task.
 // Used when a user explicitly retries a task (feedback/👍) to allow fresh attempts.
 func (q *TaskQueue) ResetTask(issueID string) {

@@ -201,12 +201,15 @@ func (p *Poller) pollUserTasks(ctx context.Context, userID string) error {
 			threadsSeen[ts] = true
 		}
 
-		// If task was previously blocked (has started: label with ⛔️), update to queued
+		// If task was previously blocked (has started: label), update to queued
+		// Only update if not already in queue (first time becoming ready)
 		if startedTS := beads.LabelValue(task.Labels, "started:"); startedTS != "" {
-			ch := beads.LabelValue(task.Labels, "channel:")
-			if ch != "" && p.poster != nil {
-				msg := status.FormatMessage("👀", task.ID, task.Description, nil)
-				_ = p.poster.UpdateMessage(ctx, ch, startedTS, msg)
+			if !p.queue.HasPending(task.ID) {
+				ch := beads.LabelValue(task.Labels, "channel:")
+				if ch != "" && p.poster != nil {
+					msg := status.FormatMessage("👀", task.ID, task.Description, nil)
+					_ = p.poster.UpdateMessage(ctx, ch, startedTS, msg)
+				}
 			}
 		}
 
