@@ -58,6 +58,8 @@ func (tc *TaskController) HandleReaction(ctx context.Context, userID, channelID,
 		tc.humanBlock(ctx, userID, channelID, issue)
 	case "+1", "thumbsup":
 		tc.humanUnblock(ctx, userID, channelID, issue)
+	case "checkered_flag": // 🏁
+		tc.humanClose(ctx, userID, channelID, issue)
 	}
 }
 
@@ -116,6 +118,22 @@ func (tc *TaskController) humanBlock(ctx context.Context, userID, channelID stri
 
 	if startedTS := beads.LabelValue(issue.Labels, "started:"); startedTS != "" {
 		msg := status.FormatMessage("⏸️", issue.ID, issue.Description, nil)
+		_ = tc.poster.UpdateMessage(ctx, channelID, startedTS, msg)
+	}
+}
+
+
+func (tc *TaskController) humanClose(ctx context.Context, userID, channelID string, issue *beads.Issue) {
+	tc.logger.Info("human close", zap.String("issue_id", issue.ID))
+
+	tc.pool.BlockTask(issue.ID)
+	tc.pool.CancelTask(issue.ID)
+
+	ownerID := tc.ownerOf(issue)
+	_ = tc.beadsMgr.CloseIssue(ctx, ownerID, issue.ID, "Closed by user")
+
+	if startedTS := beads.LabelValue(issue.Labels, "started:"); startedTS != "" {
+		msg := status.FormatMessage("🏁", issue.ID, issue.Description, nil)
 		_ = tc.poster.UpdateMessage(ctx, channelID, startedTS, msg)
 	}
 }

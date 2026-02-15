@@ -358,7 +358,7 @@ func (h *Handler) handleReaction(ev *slackevents.ReactionAddedEvent) {
 
 	// ⏸️ and 👍
 	switch ev.Reaction {
-	case "double_vertical_bar", "pause_button", "+1", "thumbsup":
+	case "double_vertical_bar", "pause_button", "+1", "thumbsup", "checkered_flag":
 		// valid
 	default:
 		return
