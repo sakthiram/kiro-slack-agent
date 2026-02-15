@@ -127,11 +127,11 @@ func (r *KiroRunner) Run(ctx context.Context, workDir, prompt string, issueID st
 			time.Sleep(100 * time.Millisecond)
 		}
 
-		r.logger.Warn("kiro-cli killed by timeout",
+		r.logger.Warn("kiro-cli killed",
 			zap.String("work_dir", workDir),
-			zap.String("output", buf.String()),
+			zap.String("reason", ctx.Err().Error()),
 		)
-		return "", fmt.Errorf("kiro-cli timed out: %w", ctx.Err())
+		return "", fmt.Errorf("kiro-cli killed: %w", ctx.Err())
 	}
 
 	response := strings.TrimSpace(buf.String())
