@@ -12,6 +12,8 @@ import (
 type WorkerPool interface {
 	CancelTask(issueID string) bool
 	ResetTask(issueID string)
+	BlockTask(issueID string)
+	UnblockTask(issueID string)
 }
 
 // StatusPoster posts and updates status messages in Slack threads.
@@ -105,7 +107,9 @@ func (tc *TaskController) HandleFeedback(ctx context.Context, userID, channelID,
 func (tc *TaskController) humanBlock(ctx context.Context, userID, channelID string, issue *beads.Issue) {
 	tc.logger.Info("human block", zap.String("issue_id", issue.ID))
 
-	// Find owner
+	// Block in memory FIRST — prevents retry race
+	tc.pool.BlockTask(issue.ID)
+
 	ownerID := tc.ownerOf(issue)
 	_ = tc.beadsMgr.AddLabel(ctx, ownerID, issue.ID, "human:blocked")
 	tc.pool.CancelTask(issue.ID)
@@ -122,6 +126,7 @@ func (tc *TaskController) humanUnblock(ctx context.Context, userID, channelID st
 	ownerID := tc.ownerOf(issue)
 	_ = tc.beadsMgr.RemoveLabel(ctx, ownerID, issue.ID, "human:blocked")
 	tc.pool.ResetTask(issue.ID)
+	tc.pool.UnblockTask(issue.ID)
 
 	// Reopen if it was closed/in_progress
 	if issue.Status != "open" {

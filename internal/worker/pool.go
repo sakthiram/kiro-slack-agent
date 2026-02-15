@@ -204,3 +204,13 @@ func (p *WorkerPool) CancelTask(issueID string) bool {
 func (p *WorkerPool) ResetTask(issueID string) {
 	p.queue.ResetTask(issueID)
 }
+
+// BlockTask marks a task as human-blocked in the queue.
+func (p *WorkerPool) BlockTask(issueID string) {
+	p.queue.BlockTask(issueID)
+}
+
+// UnblockTask removes the human-blocked mark from the queue.
+func (p *WorkerPool) UnblockTask(issueID string) {
+	p.queue.UnblockTask(issueID)
+}

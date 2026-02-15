@@ -14,6 +14,7 @@ type TaskQueue struct {
 	results    chan *TaskResult
 	pending    map[string]*TaskWork // Track pending tasks by IssueID
 	completed  map[string]int       // Track completed tasks and their attempt count
+	blocked    map[string]bool      // Human-blocked tasks (in-memory, instant)
 	mu         sync.RWMutex
 	closed     bool
 	maxRetries int
@@ -26,6 +27,7 @@ func NewTaskQueue(capacity int, maxRetries int) *TaskQueue {
 		results:    make(chan *TaskResult, capacity),
 		pending:    make(map[string]*TaskWork),
 		completed:  make(map[string]int),
+		blocked:    make(map[string]bool),
 		maxRetries: maxRetries,
 	}
 }
@@ -49,6 +51,11 @@ func (q *TaskQueue) Add(ctx context.Context, work *TaskWork) error {
 	// Check if task has exhausted retries (poller re-adding a completed task)
 	if attempts, ok := q.completed[work.IssueID]; ok && attempts > q.maxRetries {
 		return fmt.Errorf("task %s exhausted retries (%d)", work.IssueID, attempts)
+	}
+
+	// Check if task is human-blocked
+	if q.blocked[work.IssueID] {
+		return fmt.Errorf("task %s is human-blocked", work.IssueID)
 	}
 
 	// Set max retries if not already set
@@ -121,6 +128,27 @@ func (q *TaskQueue) ResetTask(issueID string) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	delete(q.completed, issueID)
+}
+
+// BlockTask marks a task as human-blocked (in-memory, instant).
+func (q *TaskQueue) BlockTask(issueID string) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.blocked[issueID] = true
+}
+
+// UnblockTask removes the human-blocked mark.
+func (q *TaskQueue) UnblockTask(issueID string) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	delete(q.blocked, issueID)
+}
+
+// IsBlocked returns true if a task is human-blocked.
+func (q *TaskQueue) IsBlocked(issueID string) bool {
+	q.mu.RLock()
+	defer q.mu.RUnlock()
+	return q.blocked[issueID]
 }
 
 // Close closes the queue and prevents new tasks from being added.
