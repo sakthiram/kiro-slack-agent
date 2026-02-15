@@ -27,11 +27,9 @@ type SlackConfig struct {
 
 // KiroConfig holds Kiro CLI configuration.
 type KiroConfig struct {
-	BinaryPath      string        `mapstructure:"binary_path"`      // default: kiro-cli
+	BinaryPath      string        `mapstructure:"binary_path"`       // default: kiro-cli
 	SessionBasePath string        `mapstructure:"session_base_path"` // default: /tmp/kiro-sessions
-	StartupTimeout  time.Duration `mapstructure:"startup_timeout"`  // default: 30s
-	ResponseTimeout time.Duration `mapstructure:"response_timeout"` // default: 120s
-	MaxRetries      int           `mapstructure:"max_retries"`      // default: 1
+	ResponseTimeout time.Duration `mapstructure:"response_timeout"`  // default: 120s
 }
 
 // BeadsConfig holds beads issue tracking configuration.
@@ -49,11 +47,13 @@ type LoggingConfig struct {
 
 // WorkerConfig holds worker pool configuration.
 type WorkerConfig struct {
-	PoolSize     int           `mapstructure:"pool_size"`     // default: 3
-	PollInterval time.Duration `mapstructure:"poll_interval"` // default: 10s
-	TaskTimeout  time.Duration `mapstructure:"task_timeout"`  // default: 5m
-	MaxRetries   int           `mapstructure:"max_retries"`   // default: 2
-	RetryBackoff time.Duration `mapstructure:"retry_backoff"` // default: 30s
+	PoolSize     int           `mapstructure:"pool_size"`      // default: 3
+	PollInterval time.Duration `mapstructure:"poll_interval"`  // default: 10s
+	TaskTimeout  time.Duration `mapstructure:"task_timeout"`   // default: 5m
+	MaxRetries   int           `mapstructure:"max_retries"`    // default: 2
+	RetryBackoff time.Duration `mapstructure:"retry_backoff"`  // default: 30s
+	AgentLog     bool          `mapstructure:"agent_log"`      // default: false — tee agent stdout to per-task log file
+	AgentGrace   time.Duration `mapstructure:"agent_grace"`    // default: 60s — grace period before agent-created tasks are eligible
 }
 
 // SyncConfig holds comment synchronization configuration.
@@ -111,9 +111,7 @@ func setDefaults(v *viper.Viper) {
 	// Kiro defaults
 	v.SetDefault("kiro.binary_path", "kiro-cli")
 	v.SetDefault("kiro.session_base_path", "/tmp/kiro-sessions")
-	v.SetDefault("kiro.startup_timeout", 30*time.Second)
 	v.SetDefault("kiro.response_timeout", 120*time.Second)
-	v.SetDefault("kiro.max_retries", 1)
 
 	// Beads defaults
 	v.SetDefault("beads.sessions_base_path", "/var/kiro-agent/sessions")
@@ -126,6 +124,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("worker.task_timeout", 5*time.Minute)
 	v.SetDefault("worker.max_retries", 2)
 	v.SetDefault("worker.retry_backoff", 30*time.Second)
+	v.SetDefault("worker.agent_log", false)
+	v.SetDefault("worker.agent_grace", 60*time.Second)
 
 	// Sync defaults
 	v.SetDefault("sync.sync_interval", 5*time.Second)

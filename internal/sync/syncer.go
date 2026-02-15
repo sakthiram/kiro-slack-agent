@@ -19,6 +19,7 @@ type BeadsManager interface {
 	HasLabel(ctx context.Context, userID, issueID, label string) bool
 	ListUserDirs() []string
 	ListIssuesByStatus(ctx context.Context, userID string, statuses []string) ([]*beads.Issue, error)
+	GetThreadTaskCounts(ctx context.Context, userID, threadTS string) (open, inProgress, closed int, err error)
 }
 
 // CommentSyncer synchronizes agent comments from Beads issues to Slack threads.
@@ -134,8 +135,12 @@ func (s *CommentSyncer) SyncIssue(ctx context.Context, issueID string) error {
 			continue // Already synced in beads
 		}
 
-		// Post the comment to Slack with task ID footer
-		content := msg.Content + fmt.Sprintf("\n\n> 🏷️ _task: `%s` — reference this ID for follow-ups_", issueID)
+		// Post the comment to Slack with task ID footer and thread stats
+		footer := fmt.Sprintf("\n\n> 🏷️ task: `%s`", issueID)
+		if open, inProg, done, countErr := s.beadsMgr.GetThreadTaskCounts(ctx, state.UserID, state.SlackThreadTS); countErr == nil && (open+inProg+done) > 0 {
+			footer += fmt.Sprintf("\n> 📊 %d ✅ done · %d 🔄 in progress · %d 📋 open", done, inProg, open)
+		}
+		content := msg.Content + footer
 		_, err := s.slackClient.PostMessage(
 			ctx,
 			state.ChannelID,

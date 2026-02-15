@@ -168,13 +168,13 @@ func (m *Manager) GetUserDir(userID string) string {
 	return filepath.Join(m.sessionsBasePath, userID)
 }
 
-// FindThreadIssue finds an existing issue for a thread by labels.
-// Returns nil if no issue is found.
+// FindThreadIssue finds the root feature issue for a thread by labels.
+// Returns the feature-type issue (the original thread root), falling back to
+// the oldest issue if no feature is found. Returns nil if no issue is found.
 func (m *Manager) FindThreadIssue(ctx context.Context, userID string, thread *ThreadInfo) (*Issue, error) {
 	userDir := m.GetUserDir(userID)
 
 	// Use bd list with label filter to find the issue
-	// bd list --label thread:<ts> --json --allow-stale
 	cmd := bdCmd(ctx, "list",
 		"--all",
 		"--label", "thread:"+thread.ThreadTS,
@@ -207,7 +207,23 @@ func (m *Manager) FindThreadIssue(ctx context.Context, userID string, thread *Th
 		return nil, nil
 	}
 
-	return &issues[0], nil
+	// Prefer the root feature issue — the one created by ProcessMainPost.
+	// This avoids parenting human thread replies under agent-created subtasks,
+	// which would cause transitive blocking from the agent's dependency graph.
+	for i := range issues {
+		if issues[i].Type == "feature" {
+			return &issues[i], nil
+		}
+	}
+
+	// Fallback: return the oldest issue (first created) as a best guess for root
+	oldest := &issues[0]
+	for i := 1; i < len(issues); i++ {
+		if issues[i].CreatedAt.Before(oldest.CreatedAt) {
+			oldest = &issues[i]
+		}
+	}
+	return oldest, nil
 }
 
 // CreateThreadIssue creates a bd issue to track a Slack thread conversation.
@@ -690,6 +706,58 @@ func (m *Manager) CloseIssue(ctx context.Context, userID, issueID, reason string
 	}
 
 	return nil
+}
+
+// ReopenIssue runs `bd update <id> --status open` to reset an in-progress task.
+// Used during graceful shutdown to ensure interrupted tasks are re-queued on restart.
+func (m *Manager) ReopenIssue(ctx context.Context, userID, issueID string) error {
+	userDir := m.GetUserDir(userID)
+
+	cmd := bdCmd(ctx, "update", issueID, "--status", "open", "--no-daemon")
+	cmd.Dir = userDir
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		m.logger.Error("failed to reopen issue",
+			zap.String("user_id", userID),
+			zap.String("issue_id", issueID),
+			zap.String("output", string(output)),
+			zap.Error(err),
+		)
+		return fmt.Errorf("failed to reopen issue: %w", err)
+	}
+
+	return nil
+}
+
+// GetThreadTaskCounts returns open, in-progress, and closed task counts for a thread.
+func (m *Manager) GetThreadTaskCounts(ctx context.Context, userID, threadTS string) (open, inProgress, closed int, err error) {
+	userDir := m.GetUserDir(userID)
+
+	cmd := bdCmd(ctx, "list", "--all", "--label", "thread:"+threadTS, "--json", "--allow-stale", "--no-daemon")
+	cmd.Dir = userDir
+
+	output, err := cmd.Output()
+	if err != nil {
+		return 0, 0, 0, nil // no issues is fine
+	}
+
+	var issues []Issue
+	if err := json.Unmarshal(output, &issues); err != nil {
+		return 0, 0, 0, nil
+	}
+
+	for _, issue := range issues {
+		switch issue.Status {
+		case "open":
+			open++
+		case "in_progress":
+			inProgress++
+		case "closed":
+			closed++
+		}
+	}
+	return open, inProgress, closed, nil
 }
 
 // GetIssue runs `bd show <id> --json` to retrieve an issue with all its details.

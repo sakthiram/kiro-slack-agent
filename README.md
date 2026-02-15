@@ -12,14 +12,15 @@ Kiro Slack Agent provides a seamless interface between Slack and the Kiro CLI, a
 - **@Mention Support**: Mention the bot in channels to get help
 - **Thread-Based Conversations**: Each thread maintains context via beads issue tracking
 - **Async Processing**: Messages are queued and processed by a worker pool for scalability
+- **Emoji Reactions**: Real-time progress feedback via emoji (👀 → ⏳ → ✅/🔁/❌)
 - **Issue-Driven Context**: Conversation history stored in beads (bd) for persistence
 - **Comment Sync**: Agent responses automatically sync from beads to Slack threads
-- **Retry Logic**: Automatic retry on Kiro CLI failures for reliability
+- **Smart Retry**: Automatic retry on failures with visual feedback (🔁 + count emoji)
+- **Agent Grace Period**: Prevents race conditions when agents decompose tasks with dependencies
 - **Non-Interactive Execution**: Uses `kiro-cli --no-interactive` for simple, robust integration
 - **Restart Resilience**: State persisted in beads labels - survives restarts without duplicate messages
-- **Automatic Database Sync**: Beads database synchronized on access to prevent stale data issues
 - **Thread History Context**: Worker agents can access previous issues from the same conversation thread
-- **Race Condition Protection**: Mutex-protected tracking prevents duplicate message delivery
+- **Debug Logging**: Optional per-task log files for live tailing agent output (`worker.agent_log`)
 
 ## Prerequisites
 
@@ -255,7 +256,16 @@ worker:
   task_timeout: "5m"            # Max time for kiro-cli execution
   max_retries: 2                # Retry count on failure
   retry_backoff: "30s"          # Wait between retries
+  agent_log: false              # Tee agent stdout to per-task log file for debugging
 ```
+
+When `agent_log` is enabled, each task's kiro-cli output is written to `.beads/logs/<issueID>.log` in the user's session directory. Tail it live:
+
+```bash
+tail -f ~/.kiro-agent/sessions/<userID>/.beads/logs/<issueID>.log
+```
+
+Also settable via environment variable: `KIRO_AGENT_WORKER_AGENT_LOG=true`
 
 #### Comment Sync
 
@@ -376,12 +386,17 @@ Each thread maintains its own Kiro CLI session, preserving full conversation con
 
 ### Response Indicators
 
-- 📝 **Received! Working on it...**: Bot has received a new message and created a Feature issue
-- 👍 **Got it! Processing...**: Bot has received a thread reply and created a Task issue
-- ✍️ **[agent]**: Agent response synced from beads to Slack
-- ❌ **Error**: Something went wrong (error message follows)
+The bot uses emoji reactions on your message to show progress:
 
-**Note**: All responses appear in the correct thread context. When you @mention the bot or reply to a thread, acknowledgments and responses stay in that thread.
+| Emoji | Meaning |
+|-------|---------|
+| 👀 | Message received, queued for processing |
+| ⏳ | Agent is actively working on your request |
+| ✅ | Task completed successfully |
+| 🔁 | Task failed, retrying (number emoji shows retry count: 🔁2️⃣ = 2nd retry) |
+| ❌ | Task failed after all retries exhausted |
+
+Agent responses appear as thread replies with `[agent]` prefix, synced from beads to Slack.
 
 ### Session Management
 
@@ -431,19 +446,21 @@ For detailed architecture documentation including component descriptions, messag
 
 ```
 User Message → Slack → Socket Mode → Handler → Feature Processor
-                                                      ↓
-                                              Create Feature/Task
-                                              in Beads (bd)
-                                                      ↓
-                                         Poller (bd ready) → Task Queue
-                                                      ↓
-                                              Worker Pool
-                                                      ↓
-                                         kiro-cli --no-interactive
-                                                      ↓
-                                         Add [agent] comment to beads
-                                                      ↓
-                                         Comment Syncer → Slack Thread
+                                        ↓               ↓
+                                   React 👀      Create Feature/Task
+                                                 in Beads (bd)
+                                                        ↓
+                                           Poller (bd ready) → Task Queue
+                                           (agent tasks wait 60s grace)
+                                                        ↓
+                                                Worker Pool
+                                                   ↓    ↓
+                                             React ⏳   kiro-cli --no-interactive
+                                                        ↓
+                                               Add [agent] comment to beads
+                                                        ↓
+                                             React ✅   Comment Syncer → Slack Thread
+                                            (or 🔁/❌)
 ```
 
 The architecture is **fully async**: the Slack handler returns immediately after creating the beads issue, and the response arrives via the comment sync loop.
@@ -510,6 +527,5 @@ For issues, questions, or contributions:
 ## Acknowledgments
 
 - Built with [slack-go/slack](https://github.com/slack-go/slack) for Slack integration
-- Uses [creack/pty](https://github.com/creack/pty) for PTY management
 - Powered by Kiro CLI agent
 - Issue tracking via [beads (bd)](https://github.com/steveyegge/beads) - Git-backed issue tracker for AI workflows

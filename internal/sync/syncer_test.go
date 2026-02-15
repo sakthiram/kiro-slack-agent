@@ -98,6 +98,10 @@ func (m *mockBeadsManager) ListIssuesByStatus(ctx context.Context, userID string
 	return []*beads.Issue{}, nil
 }
 
+func (m *mockBeadsManager) GetThreadTaskCounts(ctx context.Context, userID, threadTS string) (int, int, int, error) {
+	return 0, 0, 0, nil
+}
+
 func (m *mockBeadsManager) setMessages(messages []beads.Message) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

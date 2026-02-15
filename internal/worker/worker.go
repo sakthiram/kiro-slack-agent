@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/sakthiram/kiro-slack-agent/internal/beads"
@@ -24,6 +25,8 @@ type Worker struct {
 	logger      *zap.Logger
 	stopChan    chan struct{}
 	doneChan    chan struct{}
+	currentTask *queue.TaskWork // tracks in-flight task for shutdown cleanup
+	mu          sync.Mutex
 }
 
 // NewWorker creates a new worker instance.
@@ -53,7 +56,10 @@ func NewWorker(
 // Runs in a loop until Stop() is called or context is cancelled.
 func (w *Worker) Start(ctx context.Context) {
 	w.logger.Info("worker started")
-	defer close(w.doneChan)
+	defer func() {
+		w.resetCurrentTask()
+		close(w.doneChan)
+	}()
 
 	for {
 		select {
@@ -93,8 +99,49 @@ func (w *Worker) WaitForShutdown() {
 	<-w.doneChan
 }
 
+// resetCurrentTask resets any in-progress task back to open on shutdown.
+// Uses a fresh context since the parent context is already cancelled.
+func (w *Worker) resetCurrentTask() {
+	w.mu.Lock()
+	task := w.currentTask
+	w.mu.Unlock()
+
+	if task == nil {
+		return
+	}
+
+	w.logger.Info("resetting interrupted task to open",
+		zap.String("issue_id", task.IssueID),
+		zap.String("user_id", task.UserID),
+	)
+
+	// Use a short-lived independent context — the parent is already cancelled
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := w.beadsMgr.ReopenIssue(ctx, task.UserID, task.IssueID); err != nil {
+		w.logger.Error("failed to reset task to open",
+			zap.String("issue_id", task.IssueID),
+			zap.Error(err),
+		)
+	}
+}
+
 // processTask processes a single task.
 func (w *Worker) processTask(ctx context.Context, task *queue.TaskWork) {
+	w.mu.Lock()
+	w.currentTask = task
+	w.mu.Unlock()
+	defer func() {
+		// Only clear currentTask if we completed normally (not interrupted by shutdown).
+		// On shutdown, resetCurrentTask will handle resetting the beads status.
+		if ctx.Err() == nil {
+			w.mu.Lock()
+			w.currentTask = nil
+			w.mu.Unlock()
+		}
+	}()
+
 	startTime := time.Now()
 
 	w.logger.Info("processing task",
@@ -143,17 +190,42 @@ func (w *Worker) processTask(ctx context.Context, task *queue.TaskWork) {
 		result.Success = true
 	}
 
-	// React: swap ⏳ → ✅ or ❌
-	if task.ThreadInfo != nil && task.ThreadInfo.MessageTS != "" {
-		emoji := "white_check_mark"
-		if !result.Success {
-			emoji = "x"
-		}
-		w.syncer.ReactTo(ctx, task.ThreadInfo.ChannelID, task.ThreadInfo.MessageTS, emoji, "hourglass_flowing_sand")
-	}
-
 	// Record the result — must happen before retry Add() to clear pending map
 	w.queue.Complete(result)
+
+	// Determine final emoji based on success/retry state
+	if task.ThreadInfo != nil && task.ThreadInfo.MessageTS != "" {
+		ch := task.ThreadInfo.ChannelID
+		ts := task.ThreadInfo.MessageTS
+
+		if result.Success {
+			// ⏳ → ✅
+			w.syncer.ReactTo(ctx, ch, ts, "white_check_mark", "hourglass_flowing_sand")
+		} else if task.Retries < task.MaxRetries {
+			// Retrying: ⏳ → 🔁 (first retry) or add retry count emoji
+			w.syncer.ReactTo(ctx, ch, ts, "repeat", "hourglass_flowing_sand")
+			if task.Retries > 0 {
+				// Add number emoji for retry count (2️⃣, 3️⃣, etc.)
+				// Remove previous count first
+				if prev := retryCountEmoji(task.Retries); prev != "" {
+					w.syncer.ReactTo(ctx, ch, ts, "", prev)
+				}
+				if cur := retryCountEmoji(task.Retries + 1); cur != "" {
+					w.syncer.ReactTo(ctx, ch, ts, cur, "")
+				}
+			}
+		} else {
+			// All retries exhausted: ⏳/🔁 → ❌
+			w.syncer.ReactTo(ctx, ch, ts, "x", "hourglass_flowing_sand")
+			w.syncer.ReactTo(ctx, ch, ts, "", "repeat")
+			// Clean up any retry count emoji
+			for i := 2; i <= task.MaxRetries+1; i++ {
+				if e := retryCountEmoji(i); e != "" {
+					w.syncer.ReactTo(ctx, ch, ts, "", e)
+				}
+			}
+		}
+	}
 
 	// Retry logic (after Complete so pending map is cleared for re-add)
 	if !result.Success && task.Retries < task.MaxRetries {
@@ -170,6 +242,16 @@ func (w *Worker) processTask(ctx context.Context, task *queue.TaskWork) {
 			)
 		}
 	}
+}
+
+// retryCountEmoji returns the Slack number emoji for a retry count (2-9).
+// Returns empty string for counts outside that range.
+func retryCountEmoji(n int) string {
+	names := []string{"", "", "two", "three", "four", "five", "six", "seven", "eight", "nine"}
+	if n >= 2 && n < len(names) {
+		return names[n]
+	}
+	return ""
 }
 
 // processTaskInternal handles the actual task processing logic.
@@ -240,7 +322,7 @@ func (w *Worker) processTaskInternal(ctx context.Context, task *queue.TaskWork, 
 	)
 
 	// Run the kiro agent
-	response, err := w.runner.Run(ctx, userDir, prompt)
+	response, err := w.runner.Run(ctx, userDir, prompt, task.IssueID)
 	if err != nil {
 		return fmt.Errorf("kiro runner failed: %w", err)
 	}

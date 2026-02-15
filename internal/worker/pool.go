@@ -65,7 +65,7 @@ func (p *WorkerPool) Start(ctx context.Context) {
 	// Create and start workers
 	for i := 0; i < p.cfg.PoolSize; i++ {
 		// Create a KiroRunner for each worker
-		runner := NewKiroRunner(p.kiroCfg, p.logger)
+		runner := NewKiroRunner(p.kiroCfg, p.cfg, p.logger)
 
 		// Create the worker
 		worker := NewWorker(

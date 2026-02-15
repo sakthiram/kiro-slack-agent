@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -18,14 +20,16 @@ import (
 type KiroRunner struct {
 	binaryPath      string
 	responseTimeout time.Duration
+	agentLog        bool
 	logger          *zap.Logger
 }
 
 // NewKiroRunner creates a new KiroRunner instance.
-func NewKiroRunner(cfg *config.KiroConfig, logger *zap.Logger) *KiroRunner {
+func NewKiroRunner(cfg *config.KiroConfig, workerCfg *config.WorkerConfig, logger *zap.Logger) *KiroRunner {
 	return &KiroRunner{
 		binaryPath:      cfg.BinaryPath,
 		responseTimeout: cfg.ResponseTimeout,
+		agentLog:        workerCfg.AgentLog,
 		logger:          logger,
 	}
 }
@@ -33,7 +37,8 @@ func NewKiroRunner(cfg *config.KiroConfig, logger *zap.Logger) *KiroRunner {
 // Run executes kiro-cli in non-interactive mode and returns the response.
 // The command is run with --trust-all-tools, --no-interactive, and --wrap never flags.
 // It kills the entire process group on timeout to prevent orphaned child processes.
-func (r *KiroRunner) Run(ctx context.Context, workDir, prompt string) (string, error) {
+// If agentLog is enabled, stdout/stderr is teed to .beads/logs/<issueID>.log for live tailing.
+func (r *KiroRunner) Run(ctx context.Context, workDir, prompt string, issueID string) (string, error) {
 	// Create a timeout context if not already set
 	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
 		var cancel context.CancelFunc
@@ -59,10 +64,29 @@ func (r *KiroRunner) Run(ctx context.Context, workDir, prompt string) (string, e
 	cmd.Env = append(os.Environ(), "TERM=dumb")
 
 	var buf bytes.Buffer
-	cmd.Stdout = &buf
-	cmd.Stderr = &buf
+	var logFile *os.File
+
+	if r.agentLog && issueID != "" {
+		logDir := filepath.Join(workDir, ".beads", "logs")
+		_ = os.MkdirAll(logDir, 0750)
+		logPath := filepath.Join(logDir, issueID+".log")
+		if f, err := os.Create(logPath); err == nil {
+			logFile = f
+			mw := io.MultiWriter(&buf, logFile)
+			cmd.Stdout = mw
+			cmd.Stderr = mw
+			r.logger.Info("agent log", zap.String("path", logPath))
+		}
+	}
+	if logFile == nil {
+		cmd.Stdout = &buf
+		cmd.Stderr = &buf
+	}
 
 	if err := cmd.Start(); err != nil {
+		if logFile != nil {
+			_ = logFile.Close()
+		}
 		return "", fmt.Errorf("failed to start kiro-cli: %w", err)
 	}
 
@@ -74,6 +98,9 @@ func (r *KiroRunner) Run(ctx context.Context, workDir, prompt string) (string, e
 
 	select {
 	case err := <-done:
+		if logFile != nil {
+			_ = logFile.Close()
+		}
 		if err != nil {
 			r.logger.Error("kiro-cli execution failed",
 				zap.String("work_dir", workDir),
@@ -83,6 +110,9 @@ func (r *KiroRunner) Run(ctx context.Context, workDir, prompt string) (string, e
 			return "", fmt.Errorf("kiro-cli execution failed: %w (output: %s)", err, buf.String())
 		}
 	case <-ctx.Done():
+		if logFile != nil {
+			_ = logFile.Close()
+		}
 		// Kill entire process group (negative PID)
 		pgid := cmd.Process.Pid
 		_ = syscall.Kill(-pgid, syscall.SIGKILL)

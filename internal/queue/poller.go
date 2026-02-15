@@ -27,6 +27,7 @@ type Poller struct {
 	beadsMgr       BeadsManager
 	sessionsBase   string
 	pollInterval   time.Duration
+	agentGrace     time.Duration // Grace period for agent-created tasks (no msg: label)
 	logger         *zap.Logger
 	bdBinaryPath   string
 }
@@ -37,6 +38,7 @@ func NewPoller(
 	beadsMgr BeadsManager,
 	sessionsBase string,
 	pollInterval time.Duration,
+	agentGrace time.Duration,
 	logger *zap.Logger,
 ) *Poller {
 	return &Poller{
@@ -44,6 +46,7 @@ func NewPoller(
 		beadsMgr:     beadsMgr,
 		sessionsBase: sessionsBase,
 		pollInterval: pollInterval,
+		agentGrace:   agentGrace,
 		logger:       logger,
 		bdBinaryPath: findBdBinary(),
 	}
@@ -183,6 +186,17 @@ func (p *Poller) pollUserTasks(ctx context.Context, userID string) error {
 			continue
 		}
 
+		// Grace period: skip agent-created tasks (no msg: label) that are too young.
+		// This prevents racing with decomposition agents that create tasks before
+		// wiring their dependency chains.
+		if !hasLabel(task.Labels, "msg:") && time.Since(task.CreatedAt) < p.agentGrace {
+			p.logger.Debug("skipping young agent task (grace period)",
+				zap.String("issue_id", task.ID),
+				zap.Duration("age", time.Since(task.CreatedAt)),
+			)
+			continue
+		}
+
 		work := &TaskWork{
 			IssueID:   task.ID,
 			UserID:    userID,
@@ -235,4 +249,14 @@ func extractThreadInfo(labels []string) *beads.ThreadInfo {
 	}
 
 	return info
+}
+
+// hasLabel checks if any label starts with the given prefix.
+func hasLabel(labels []string, prefix string) bool {
+	for _, l := range labels {
+		if len(l) >= len(prefix) && l[:len(prefix)] == prefix {
+			return true
+		}
+	}
+	return false
 }

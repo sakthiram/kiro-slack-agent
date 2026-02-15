@@ -57,7 +57,7 @@ func main() {
 
 	// 5. Initialize async components
 	// Task queue for holding bd issues ready to process
-	taskQueue := queue.NewTaskQueue(100, 3) // capacity=100, maxRetries=3
+	taskQueue := queue.NewTaskQueue(100, cfg.Worker.MaxRetries)
 
 	// Comment syncer for propagating Kiro responses back to Slack
 	syncer := syncpkg.NewCommentSyncer(beadsMgr, slackClient, logger)
@@ -69,7 +69,7 @@ func main() {
 	workerPool := worker.NewWorkerPool(taskQueue, beadsMgr, syncer, &cfg.Worker, &cfg.Kiro, logger)
 
 	// Poller checks for bd issues in "ready" state and enqueues them
-	poller := queue.NewPoller(taskQueue, beadsMgr, cfg.Beads.SessionsBasePath, cfg.Worker.PollInterval, logger)
+	poller := queue.NewPoller(taskQueue, beadsMgr, cfg.Beads.SessionsBasePath, cfg.Worker.PollInterval, cfg.Worker.AgentGrace, logger)
 
 	// 6. Create Slack handler with feature processor
 	handler := slack.NewHandlerWithFeatureProcessor(slackClient, featureProcessor, logger)
