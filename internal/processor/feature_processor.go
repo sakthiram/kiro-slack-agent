@@ -17,6 +17,13 @@ type BeadsManager interface {
 	CreateTask(ctx context.Context, userID, parentID string, thread *beads.ThreadInfo, title, desc string) (*beads.Issue, error)
 	FindThreadIssue(ctx context.Context, userID string, thread *beads.ThreadInfo) (*beads.Issue, error)
 	UpdateThreadIssue(ctx context.Context, userID, issueID, role, message string) error
+	AddUserComment(ctx context.Context, userID, issueID, content string) error
+	CloseIssue(ctx context.Context, userID, issueID, reason string) error
+	ReopenIssue(ctx context.Context, userID, issueID string) error
+	AddLabel(ctx context.Context, userID, issueID, label string) error
+	FindIssueByStartedTS(ctx context.Context, userID, msgTS string) (*beads.Issue, error)
+	ListIssuesByStatus(ctx context.Context, userID string, statuses []string) ([]*beads.Issue, error)
+	ListUserDirs() []string
 }
 
 // Syncer provides an interface for registering issues for comment synchronization.

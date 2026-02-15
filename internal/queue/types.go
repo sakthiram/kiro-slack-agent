@@ -10,10 +10,11 @@ import (
 type TaskWork struct {
 	IssueID    string
 	UserID     string
-	ThreadInfo *beads.ThreadInfo // Import from internal/beads
+	ThreadInfo *beads.ThreadInfo
 	Priority   int
 	Retries    int
 	MaxRetries int
+	UserRetry  bool // true if this is a user-initiated retry (feedback/🔄), doesn't count toward MaxRetries
 	CreatedAt  time.Time
 }
 

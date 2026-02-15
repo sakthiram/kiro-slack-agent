@@ -19,13 +19,21 @@ type FeatureProcessor interface {
 	ProcessThreadReply(ctx context.Context, msg *MessageEvent) error
 }
 
+// TaskController handles reaction-based task control and feedback.
+type TaskController interface {
+	HandleReaction(ctx context.Context, userID, channelID, msgTS, reaction string)
+	HandleFeedback(ctx context.Context, userID, channelID, threadTS, botMsgTS, feedback string) error
+	IsBotMessage(ctx context.Context, userID, channelID, threadTS, msgTS string) bool
+}
+
 // Handler handles Slack Socket Mode events.
 type Handler struct {
 	client           *Client
-	messageHandler   MessageHandler    // Legacy synchronous handler (deprecated)
-	featureProcessor FeatureProcessor  // New async feature processor
+	messageHandler   MessageHandler
+	featureProcessor FeatureProcessor
+	taskController   TaskController
 	logger           *zap.Logger
-	syncMode         bool              // When true, process messages synchronously
+	syncMode         bool
 }
 
 // NewHandler creates a new event handler.
@@ -39,10 +47,11 @@ func NewHandler(client *Client, messageHandler MessageHandler, logger *zap.Logge
 }
 
 // NewHandlerWithFeatureProcessor creates a new event handler with async feature processing.
-func NewHandlerWithFeatureProcessor(client *Client, featureProcessor FeatureProcessor, logger *zap.Logger) *Handler {
+func NewHandlerWithFeatureProcessor(client *Client, featureProcessor FeatureProcessor, taskController TaskController, logger *zap.Logger) *Handler {
 	return &Handler{
 		client:           client,
 		featureProcessor: featureProcessor,
+		taskController:   taskController,
 		logger:           logger,
 	}
 }
@@ -123,6 +132,8 @@ func (h *Handler) handleCallbackEventSync(event slackevents.EventsAPIEvent) erro
 			h.handleAppMention(ev)
 		case *slackevents.MessageEvent:
 			h.handleMessage(ev)
+		case *slackevents.ReactionAddedEvent:
+			h.handleReaction(ev)
 		default:
 			h.logger.Debug("unhandled inner event type", zap.String("type", innerEvent.Type))
 		}
@@ -250,11 +261,27 @@ func (h *Handler) handleWithFeatureProcessor(msg *MessageEvent, logger *zap.Logg
 		var err error
 
 		if isMainPost {
-			// Main post - create Feature issue
 			logger.Info("routing to ProcessMainPost")
 			err = h.featureProcessor.ProcessMainPost(ctx, msg)
 		} else {
-			// Thread reply - create Task issue
+			// Check if this is feedback on an existing task (text starts with `taskID`)
+			if h.taskController != nil {
+				if taskID := extractFeedbackTarget(msg.Text); taskID != "" {
+					// Strip the task ID prefix from the feedback text
+					feedback := stripTaskPrefix(msg.Text, taskID)
+					logger.Info("routing as feedback",
+						zap.String("task_id", taskID),
+						zap.String("feedback", feedback),
+					)
+					err = h.taskController.HandleFeedback(ctx, msg.UserID, msg.ChannelID, msg.ThreadTS, taskID, feedback)
+					if err == nil {
+						return // feedback handled, no 👀 needed
+					}
+					// Fall through to create new task if feedback routing failed
+					logger.Warn("feedback routing failed, creating new task", zap.Error(err))
+				}
+			}
+
 			logger.Info("routing to ProcessThreadReply")
 			err = h.featureProcessor.ProcessThreadReply(ctx, msg)
 		}
@@ -305,4 +332,78 @@ func StartSocketMode(socketClient *socketmode.Client, errChan chan<- error) {
 			errChan <- fmt.Errorf("socket mode error: %w", err)
 		}
 	}()
+}
+
+// handleReaction processes emoji reaction events for task control.
+func (h *Handler) handleReaction(ev *slackevents.ReactionAddedEvent) {
+	if h.taskController == nil {
+		return
+	}
+
+	// Only handle reactions on messages
+	if ev.Item.Type != "message" {
+		return
+	}
+
+	// Only handle ❌ and 🔄
+	switch ev.Reaction {
+	case "x", "heavy_multiplication_x", "arrows_counterclockwise":
+		// valid control reactions
+	default:
+		return
+	}
+
+	logger := h.logger.With(
+		zap.String("reaction", ev.Reaction),
+		zap.String("channel", ev.Item.Channel),
+		zap.String("user", ev.User),
+	)
+
+	logger.Info("handling reaction event")
+
+	go func() {
+		ctx := context.Background()
+		// Item.Message.Timestamp is the TS of the message that was reacted to
+		msgTS := ""
+		if ev.Item.Message != nil {
+			msgTS = ev.Item.Message.Timestamp
+		}
+		if msgTS == "" {
+			return
+		}
+		h.taskController.HandleReaction(ctx, ev.User, ev.Item.Channel, msgTS, ev.Reaction)
+	}()
+}
+
+// extractFeedbackTarget checks if the message starts with a backtick-wrapped task ID.
+// Returns the task ID if found, empty string otherwise.
+// Example: "`pda.3` fix the build" → "pda.3"
+func extractFeedbackTarget(text string) string {
+	if len(text) < 3 || text[0] != '`' {
+		return ""
+	}
+	end := 1
+	for end < len(text) && text[end] != '`' {
+		end++
+	}
+	if end >= len(text) {
+		return ""
+	}
+	return text[1:end]
+}
+
+// stripTaskPrefix removes the task ID prefix from feedback text.
+func stripTaskPrefix(text, taskID string) string {
+	prefix := "`" + taskID + "`"
+	if len(text) > len(prefix) {
+		rest := text[len(prefix):]
+		// Strip leading whitespace and common separators
+		for len(rest) > 0 && (rest[0] == ' ' || rest[0] == ':' || rest[0] == '-') {
+			rest = rest[1:]
+		}
+		if rest != "" {
+			return rest
+		}
+	}
+	return text
 }

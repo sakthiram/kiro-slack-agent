@@ -1,20 +1,44 @@
 package beads
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // Issue represents a beads issue tracking a Slack thread conversation.
 type Issue struct {
-	ID          string    `json:"id"`
-	Title       string    `json:"title"`
-	Description string    `json:"description"`
-	Status      string    `json:"status"`
-	Priority    int       `json:"priority"`
-	Type        string    `json:"issue_type"` // bd uses "issue_type" not "type"
-	ParentID    string    `json:"parent_id,omitempty"`
-	Labels      []string  `json:"labels"`
-	Comments    []Comment `json:"comments"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	ID           string       `json:"id"`
+	Title        string       `json:"title"`
+	Description  string       `json:"description"`
+	Status       string       `json:"status"`
+	Priority     int          `json:"priority"`
+	Type         string       `json:"issue_type"` // bd uses "issue_type" not "type"
+	ParentID     string       `json:"parent_id,omitempty"`
+	Labels       []string     `json:"labels"`
+	Comments     []Comment    `json:"comments"`
+	Dependencies []Dependency `json:"dependencies,omitempty"`
+	CreatedAt    time.Time    `json:"created_at"`
+	UpdatedAt    time.Time    `json:"updated_at"`
+}
+
+// Dependency represents a dependency relationship from bd list/show.
+type Dependency struct {
+	IssueID     string `json:"issue_id,omitempty"`      // from bd list
+	DependsOnID string `json:"depends_on_id,omitempty"` // from bd list
+	Type        string `json:"type,omitempty"`           // from bd list
+	// Fields from bd show (embedded issue)
+	ID     string `json:"id,omitempty"`
+	Title  string `json:"title,omitempty"`
+	Status string `json:"status,omitempty"`
+	DepType string `json:"dependency_type,omitempty"` // from bd show
+}
+
+// BlockerID returns the blocker issue ID regardless of source format.
+func (d Dependency) BlockerID() string {
+	if d.DependsOnID != "" {
+		return d.DependsOnID
+	}
+	return d.ID
 }
 
 // ReadyTask represents a task ready for processing from `bd ready`.
@@ -54,9 +78,23 @@ func (t *ThreadInfo) Labels() []string {
 		"channel:" + t.ChannelID,
 		"user:" + t.UserID,
 	}
-	// Add msg: label for deduplication and deep linking
 	if t.MessageTS != "" {
 		labels = append(labels, "msg:"+t.MessageTS)
 	}
 	return labels
+}
+
+// LabelValue extracts the value from a label with the given prefix in a label list.
+func LabelValue(labels []string, prefix string) string {
+	for _, l := range labels {
+		if strings.HasPrefix(l, prefix) {
+			return l[len(prefix):]
+		}
+	}
+	return ""
+}
+
+// HasLabel checks if a label with the given prefix exists.
+func HasLabel(labels []string, prefix string) bool {
+	return LabelValue(labels, prefix) != ""
 }

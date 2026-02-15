@@ -9,6 +9,7 @@ import (
 	"github.com/sakthiram/kiro-slack-agent/internal/beads"
 	"github.com/sakthiram/kiro-slack-agent/internal/config"
 	"github.com/sakthiram/kiro-slack-agent/internal/queue"
+	"github.com/sakthiram/kiro-slack-agent/internal/status"
 	syncpkg "github.com/sakthiram/kiro-slack-agent/internal/sync"
 	"go.uber.org/zap"
 )
@@ -26,6 +27,7 @@ type Worker struct {
 	stopChan    chan struct{}
 	doneChan    chan struct{}
 	currentTask *queue.TaskWork // tracks in-flight task for shutdown cleanup
+	taskCancel  context.CancelFunc // cancels the current task's context
 	mu          sync.Mutex
 }
 
@@ -154,6 +156,10 @@ func (w *Worker) processTask(ctx context.Context, task *queue.TaskWork) {
 	taskCtx, cancel := context.WithTimeout(ctx, w.taskTimeout)
 	defer cancel()
 
+	w.mu.Lock()
+	w.taskCancel = cancel
+	w.mu.Unlock()
+
 	// Build result object
 	result := &queue.TaskResult{
 		IssueID:     task.IssueID,
@@ -161,9 +167,43 @@ func (w *Worker) processTask(ctx context.Context, task *queue.TaskWork) {
 		Duration:    0,
 	}
 
-	// React: swap 👀 → ⏳ to indicate processing started
-	if task.ThreadInfo != nil && task.ThreadInfo.MessageTS != "" {
-		w.syncer.ReactTo(ctx, task.ThreadInfo.ChannelID, task.ThreadInfo.MessageTS, "hourglass_flowing_sand", "eyes")
+	// Get issue details for the status message
+	issue, issueErr := w.beadsMgr.GetIssue(ctx, task.UserID, task.IssueID)
+
+	// Post or update the started status message
+	startedTS := ""
+	if task.ThreadInfo != nil && task.ThreadInfo.ChannelID != "" && task.ThreadInfo.ThreadTS != "" {
+		// Check if there's already a started message (retry/re-queue)
+		if issue != nil {
+			startedTS = beads.LabelValue(issue.Labels, "started:")
+		}
+
+		// Get thread counts
+		open, inProg, done, _ := w.beadsMgr.GetThreadTaskCounts(ctx, task.UserID, task.ThreadInfo.ThreadTS)
+		counts := &status.Counts{Open: open, InProgress: inProg, Done: done}
+		desc := ""
+		if issue != nil {
+			desc = issue.Description
+		}
+		msg := status.FormatMessage("⏳", task.IssueID, desc, counts)
+
+		if startedTS != "" {
+			// Update existing started message
+			_ = w.syncer.UpdateMessage(ctx, task.ThreadInfo.ChannelID, startedTS, msg)
+		} else {
+			// Post new started message in thread
+			ts, err := w.syncer.PostInThread(ctx, task.ThreadInfo.ChannelID, task.ThreadInfo.ThreadTS, msg)
+			if err == nil && ts != "" {
+				startedTS = ts
+				// Store the started message TS as a label
+				_ = w.beadsMgr.AddLabel(ctx, task.UserID, task.IssueID, "started:"+ts)
+			}
+		}
+
+		// Remove 👀 from user's original message if present
+		if task.ThreadInfo.MessageTS != "" {
+			_ = w.syncer.RemoveReaction(ctx, task.ThreadInfo.ChannelID, task.ThreadInfo.MessageTS, "eyes")
+		}
 	}
 
 	// Process the task and update result
@@ -181,7 +221,6 @@ func (w *Worker) processTask(ctx context.Context, task *queue.TaskWork) {
 		)
 		result.Success = false
 		result.Error = err
-
 	} else {
 		w.logger.Info("task completed successfully",
 			zap.String("issue_id", task.IssueID),
@@ -193,37 +232,25 @@ func (w *Worker) processTask(ctx context.Context, task *queue.TaskWork) {
 	// Record the result — must happen before retry Add() to clear pending map
 	w.queue.Complete(result)
 
-	// Determine final emoji based on success/retry state
-	if task.ThreadInfo != nil && task.ThreadInfo.MessageTS != "" {
+	// Update started message with final status
+	if startedTS != "" && task.ThreadInfo != nil {
 		ch := task.ThreadInfo.ChannelID
-		ts := task.ThreadInfo.MessageTS
+		open, inProg, done, _ := w.beadsMgr.GetThreadTaskCounts(ctx, task.UserID, task.ThreadInfo.ThreadTS)
+		counts := &status.Counts{Open: open, InProgress: inProg, Done: done}
+		desc := ""
+		if issueErr == nil && issue != nil {
+			desc = issue.Description
+		}
 
 		if result.Success {
-			// ⏳ → ✅
-			w.syncer.ReactTo(ctx, ch, ts, "white_check_mark", "hourglass_flowing_sand")
+			msg := status.FormatMessage("✅", task.IssueID, desc, counts)
+			_ = w.syncer.UpdateMessage(ctx, ch, startedTS, msg)
 		} else if task.Retries < task.MaxRetries {
-			// Retrying: ⏳ → 🔁 (first retry) or add retry count emoji
-			w.syncer.ReactTo(ctx, ch, ts, "repeat", "hourglass_flowing_sand")
-			if task.Retries > 0 {
-				// Add number emoji for retry count (2️⃣, 3️⃣, etc.)
-				// Remove previous count first
-				if prev := retryCountEmoji(task.Retries); prev != "" {
-					w.syncer.ReactTo(ctx, ch, ts, "", prev)
-				}
-				if cur := retryCountEmoji(task.Retries + 1); cur != "" {
-					w.syncer.ReactTo(ctx, ch, ts, cur, "")
-				}
-			}
+			msg := status.FormatMessage("🔁", task.IssueID, desc, counts)
+			_ = w.syncer.UpdateMessage(ctx, ch, startedTS, msg)
 		} else {
-			// All retries exhausted: ⏳/🔁 → ❌
-			w.syncer.ReactTo(ctx, ch, ts, "x", "hourglass_flowing_sand")
-			w.syncer.ReactTo(ctx, ch, ts, "", "repeat")
-			// Clean up any retry count emoji
-			for i := 2; i <= task.MaxRetries+1; i++ {
-				if e := retryCountEmoji(i); e != "" {
-					w.syncer.ReactTo(ctx, ch, ts, "", e)
-				}
-			}
+			msg := status.FormatMessage("❌", task.IssueID, desc, counts)
+			_ = w.syncer.UpdateMessage(ctx, ch, startedTS, msg)
 		}
 	}
 
@@ -244,14 +271,19 @@ func (w *Worker) processTask(ctx context.Context, task *queue.TaskWork) {
 	}
 }
 
-// retryCountEmoji returns the Slack number emoji for a retry count (2-9).
-// Returns empty string for counts outside that range.
-func retryCountEmoji(n int) string {
-	names := []string{"", "", "two", "three", "four", "five", "six", "seven", "eight", "nine"}
-	if n >= 2 && n < len(names) {
-		return names[n]
+
+// cancelIfRunning cancels the current task if it matches the given issue ID.
+// Returns true if the task was found and cancelled.
+func (w *Worker) cancelIfRunning(issueID string) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if w.currentTask != nil && w.currentTask.IssueID == issueID && w.taskCancel != nil {
+		w.logger.Info("cancelling task", zap.String("issue_id", issueID))
+		w.taskCancel()
+		return true
 	}
-	return ""
+	return false
 }
 
 // processTaskInternal handles the actual task processing logic.

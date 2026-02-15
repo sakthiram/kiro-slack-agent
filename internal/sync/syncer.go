@@ -57,9 +57,26 @@ func (s *CommentSyncer) ReactTo(ctx context.Context, channelID, messageTS, emoji
 	if removeEmoji != "" {
 		_ = s.slackClient.RemoveReaction(ctx, channelID, messageTS, removeEmoji)
 	}
-	if err := s.slackClient.AddReaction(ctx, channelID, messageTS, emoji); err != nil {
-		s.logger.Debug("failed to add reaction", zap.String("emoji", emoji), zap.Error(err))
+	if emoji != "" {
+		if err := s.slackClient.AddReaction(ctx, channelID, messageTS, emoji); err != nil {
+			s.logger.Debug("failed to add reaction", zap.String("emoji", emoji), zap.Error(err))
+		}
 	}
+}
+
+// RemoveReaction removes an emoji reaction from a message.
+func (s *CommentSyncer) RemoveReaction(ctx context.Context, channelID, messageTS, emoji string) error {
+	return s.slackClient.RemoveReaction(ctx, channelID, messageTS, emoji)
+}
+
+// PostInThread posts a message in a Slack thread and returns the message TS.
+func (s *CommentSyncer) PostInThread(ctx context.Context, channelID, threadTS, text string) (string, error) {
+	return s.slackClient.PostMessage(ctx, channelID, text, slack.WithThreadTS(threadTS))
+}
+
+// UpdateMessage updates an existing Slack message in place.
+func (s *CommentSyncer) UpdateMessage(ctx context.Context, channelID, ts, text string) error {
+	return s.slackClient.UpdateMessage(ctx, channelID, ts, text)
 }
 
 // RegisterIssue registers a new issue for comment synchronization.
@@ -137,7 +154,7 @@ func (s *CommentSyncer) SyncIssue(ctx context.Context, issueID string) error {
 
 		// Post the comment to Slack with task ID footer and thread stats
 		// Note: counts may be off by 1 since the current task might not be closed yet
-		footer := fmt.Sprintf("\n\n> 🏷️ task: `%s`", issueID)
+		footer := fmt.Sprintf("\n\n> 🏷️ `%s`", issueID)
 		if open, inProg, done, countErr := s.beadsMgr.GetThreadTaskCounts(ctx, state.UserID, state.SlackThreadTS); countErr == nil && (open+inProg+done) > 0 {
 			footer += fmt.Sprintf("\n> 👀 %d  ⏳ %d  ✅ %d", open, inProg, done)
 		}

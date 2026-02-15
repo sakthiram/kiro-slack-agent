@@ -225,8 +225,8 @@ func TestSyncIssue_SkipsAlreadySyncedComments(t *testing.T) {
 
 	calls := slackClient.getPostCalls()
 	assert.Len(t, calls, 2, "should sync 2 assistant comments")
-	assert.Equal(t, "Hi there!", calls[0].text)
-	assert.Equal(t, "How can I help?", calls[1].text)
+	assert.Contains(t, calls[0].text, "Hi there!")
+	assert.Contains(t, calls[1].text, "How can I help?")
 	assert.Equal(t, "thread.123", calls[0].threadTS)
 
 	// Verify labels were added
@@ -283,7 +283,7 @@ func TestSyncIssue_DifferentRolesSameTimestamp(t *testing.T) {
 	// Should sync the assistant comment
 	calls := slackClient.getPostCalls()
 	assert.Len(t, calls, 1, "should sync 1 assistant comment")
-	assert.Equal(t, "Answer", calls[0].text)
+	assert.Contains(t, calls[0].text, "Answer")
 
 	// Verify comment IDs are based on role + timestamp
 	labelCalls := beadsMgr.getAddLabelCalls()
@@ -336,7 +336,7 @@ func TestSyncIssue_StableIDsAcrossCycles(t *testing.T) {
 
 	calls := slackClient.getPostCalls()
 	assert.Len(t, calls, 1)
-	assert.Equal(t, "First answer", calls[0].text)
+	assert.Contains(t, calls[0].text, "First answer")
 
 	// Capture the label that was added for the first assistant message
 	labelCalls := beadsMgr.getAddLabelCalls()
@@ -362,7 +362,7 @@ func TestSyncIssue_StableIDsAcrossCycles(t *testing.T) {
 
 	calls = slackClient.getPostCalls()
 	assert.Len(t, calls, 2, "should have 2 total posts")
-	assert.Equal(t, "Second answer", calls[1].text, "should sync new message")
+	assert.Contains(t, calls[1].text, "Second answer", "should sync new message")
 
 	// Verify that the old message kept the same ID
 	labelCalls = beadsMgr.getAddLabelCalls()
@@ -432,8 +432,11 @@ func TestSyncIssue_OnlyAssistantComments(t *testing.T) {
 	// Should only sync assistant messages
 	calls := slackClient.getPostCalls()
 	assert.Len(t, calls, 2, "should only sync assistant messages")
-	assert.Equal(t, "Assistant message 1", calls[0].text)
-	assert.Equal(t, "Assistant message 2", calls[1].text)
+	assert.Contains(t, calls[0].text, "Assistant message 1")
+	assert.Contains(t, calls[1].text, "Assistant message 2")
+	// Verify footer is appended
+	assert.Contains(t, calls[0].text, "🏷️")
+	assert.Contains(t, calls[1].text, "🏷️")
 
 	// Verify labels were only added for assistant messages
 	labelCalls := beadsMgr.getAddLabelCalls()

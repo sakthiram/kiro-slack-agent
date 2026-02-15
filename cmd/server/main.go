@@ -68,11 +68,14 @@ func main() {
 	// Worker pool for executing Kiro on ready tasks
 	workerPool := worker.NewWorkerPool(taskQueue, beadsMgr, syncer, &cfg.Worker, &cfg.Kiro, logger)
 
+	// Task controller for reaction-based task control and feedback
+	taskController := processor.NewTaskController(beadsMgr, workerPool, syncer, logger)
+
 	// Poller checks for bd issues in "ready" state and enqueues them
-	poller := queue.NewPoller(taskQueue, beadsMgr, cfg.Beads.SessionsBasePath, cfg.Worker.PollInterval, cfg.Worker.AgentGrace, logger)
+	poller := queue.NewPoller(taskQueue, beadsMgr, syncer, cfg.Beads.SessionsBasePath, cfg.Worker.PollInterval, cfg.Worker.AgentGrace, logger)
 
 	// 6. Create Slack handler with feature processor
-	handler := slack.NewHandlerWithFeatureProcessor(slackClient, featureProcessor, logger)
+	handler := slack.NewHandlerWithFeatureProcessor(slackClient, featureProcessor, taskController, logger)
 
 	// 7. Setup context with cancellation
 	ctx, cancel := context.WithCancel(context.Background())

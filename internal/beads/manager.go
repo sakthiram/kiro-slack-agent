@@ -790,6 +790,96 @@ func (m *Manager) GetIssue(ctx context.Context, userID, issueID string) (*Issue,
 	return &issues[0], nil
 }
 
+
+// GetBlockedTasks returns blocked tasks for a thread that have thread: labels.
+// Uses bd list --all with thread label, then cross-references blocked_issues_cache via sqlite.
+func (m *Manager) GetBlockedTasks(ctx context.Context, userID, threadTS string) ([]Issue, error) {
+	userDir := m.GetUserDir(userID)
+
+	// Get all open issues for this thread
+	cmd := bdCmd(ctx, "list", "--status", "open", "--label", "thread:"+threadTS, "--json", "--allow-stale")
+	cmd.Dir = userDir
+
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, nil
+	}
+
+	var allIssues []Issue
+	if err := json.Unmarshal(output, &allIssues); err != nil {
+		return nil, nil
+	}
+
+	// Get blocked issue IDs from sqlite
+	dbPath := filepath.Join(userDir, ".beads", "beads.db")
+	blockedCmd := exec.CommandContext(ctx, "sqlite3", dbPath, "SELECT issue_id FROM blocked_issues_cache;")
+	blockedOutput, err := blockedCmd.Output()
+	if err != nil {
+		return nil, nil
+	}
+
+	blockedSet := make(map[string]bool)
+	for _, line := range strings.Split(strings.TrimSpace(string(blockedOutput)), "\n") {
+		if line != "" {
+			blockedSet[line] = true
+		}
+	}
+
+	// Filter to only blocked issues
+	var blocked []Issue
+	for _, issue := range allIssues {
+		if blockedSet[issue.ID] {
+			blocked = append(blocked, issue)
+		}
+	}
+
+	return blocked, nil
+}
+
+// GetIssueBlockers returns the IDs and titles of issues blocking the given issue.
+func (m *Manager) GetIssueBlockers(ctx context.Context, userID, issueID string) ([]Dependency, error) {
+	issue, err := m.GetIssue(ctx, userID, issueID)
+	if err != nil {
+		return nil, err
+	}
+
+	var blockers []Dependency
+	for _, dep := range issue.Dependencies {
+		if dep.DepType == "blocks" && dep.Status != "closed" {
+			blockers = append(blockers, dep)
+		}
+	}
+	return blockers, nil
+}
+
+// AddUserComment adds a [user] prefixed comment to an issue (for feedback).
+func (m *Manager) AddUserComment(ctx context.Context, userID, issueID, content string) error {
+	return m.UpdateThreadIssue(ctx, userID, issueID, "user", content)
+}
+
+// FindIssueByStartedTS finds the issue that has a started:<ts> label matching the given Slack message TS.
+func (m *Manager) FindIssueByStartedTS(ctx context.Context, userID, msgTS string) (*Issue, error) {
+	userDir := m.GetUserDir(userID)
+
+	cmd := bdCmd(ctx, "list", "--all", "--label", "started:"+msgTS, "--json", "--allow-stale")
+	cmd.Dir = userDir
+
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, nil
+	}
+
+	var issues []Issue
+	if err := json.Unmarshal(output, &issues); err != nil {
+		return nil, nil
+	}
+
+	if len(issues) > 0 {
+		return &issues[0], nil
+	}
+	return nil, nil
+}
+
 // AddLabel runs `bd update <id> --add-label <label>` to add a label to an issue.
 // Used to mark comments as synced: synced:<comment_id>
 func (m *Manager) AddLabel(ctx context.Context, userID, issueID, label string) error {

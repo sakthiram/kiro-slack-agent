@@ -188,3 +188,14 @@ func (p *WorkerPool) monitorResults(ctx context.Context) {
 func (p *WorkerPool) IsRunning() bool {
 	return p.cancel != nil
 }
+
+// CancelTask finds and kills the agent process for a specific task.
+// Returns true if a running task was found and cancelled.
+func (p *WorkerPool) CancelTask(issueID string) bool {
+	for _, w := range p.workers {
+		if w.cancelIfRunning(issueID) {
+			return true
+		}
+	}
+	return false
+}
