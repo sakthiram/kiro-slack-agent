@@ -2,15 +2,11 @@ package processor
 
 import (
 	"context"
-	"fmt"
-	"regexp"
 
 	"github.com/sakthiram/kiro-slack-agent/internal/beads"
 	"github.com/sakthiram/kiro-slack-agent/internal/status"
 	"go.uber.org/zap"
 )
-
-var taskIDRegex = regexp.MustCompile("`([^`]+)`")
 
 // WorkerPool defines the interface for cancelling running tasks.
 type WorkerPool interface {
@@ -21,7 +17,6 @@ type WorkerPool interface {
 type StatusPoster interface {
 	PostInThread(ctx context.Context, channelID, threadTS, text string) (string, error)
 	UpdateMessage(ctx context.Context, channelID, ts, text string) error
-	ReactTo(ctx context.Context, channelID, messageTS, emoji, removeEmoji string)
 }
 
 // TaskController handles reaction-based task control and feedback routing.
@@ -48,174 +43,109 @@ func NewTaskController(
 }
 
 // HandleReaction processes emoji reactions on bot messages.
-// ❌ = cancel task, 🔄 = retry task.
+// ✋ = human block, 👍 = human unblock/resume.
 func (tc *TaskController) HandleReaction(ctx context.Context, userID, channelID, msgTS, reaction string) {
-	// Find the task associated with this message via started: label
-	issue, err := tc.findTaskByMsgTS(ctx, userID, channelID, msgTS)
-	if err != nil || issue == nil {
-		tc.logger.Debug("no task found for reaction",
-			zap.String("msg_ts", msgTS),
-			zap.String("reaction", reaction),
-		)
+	issue := tc.findByStartedTS(ctx, msgTS)
+	if issue == nil {
 		return
 	}
 
 	switch reaction {
-	case "x", "heavy_multiplication_x":
-		tc.cancelTask(ctx, userID, channelID, issue, msgTS)
-	case "arrows_counterclockwise":
-		tc.retryTask(ctx, userID, channelID, issue, msgTS)
+	case "raised_hand":
+		tc.humanBlock(ctx, userID, channelID, issue)
+	case "+1", "thumbsup":
+		tc.humanUnblock(ctx, userID, channelID, issue)
 	}
 }
 
-// HandleFeedback processes a user reply as feedback on a specific task.
+// HandleFeedback adds user feedback to a task, kills the agent, and reopens for re-queue.
 func (tc *TaskController) HandleFeedback(ctx context.Context, userID, channelID, threadTS, taskID, feedback string) error {
-	// Find the task by ID across all users
-	var issue *beads.Issue
-	for _, uid := range tc.beadsMgr.ListUserDirs() {
-		found, err := tc.beadsMgr.FindIssueByStartedTS(ctx, uid, "")
-		if err != nil {
-			continue
-		}
-		// Try to find by task ID directly
-		if found != nil && found.ID == taskID {
-			issue = found
-			userID = uid
-			break
-		}
-	}
-
-	// If not found by started TS, the taskID might be a short ID — search by listing
+	// Find the task owner (might differ from the reactor)
+	ownerID, issue := tc.findByID(ctx, taskID)
 	if issue == nil {
-		for _, uid := range tc.beadsMgr.ListUserDirs() {
-			issues, err := tc.beadsMgr.ListIssuesByStatus(ctx, uid, []string{"open", "in_progress"})
-			if err != nil {
-				continue
-			}
-			for _, iss := range issues {
-				if iss.ID == taskID || shortID(iss.ID) == taskID {
-					issue = iss
-					userID = uid
-					break
-				}
-			}
-			if issue != nil {
-				break
-			}
-		}
+		return nil // not found, let caller fall through to new task
 	}
 
-	if issue == nil {
-		return fmt.Errorf("task %s not found", taskID)
-	}
-
-	tc.logger.Info("adding feedback to task",
+	tc.logger.Info("feedback on task",
 		zap.String("issue_id", issue.ID),
-		zap.String("feedback", feedback[:min(len(feedback), 80)]),
+		zap.Int("feedback_len", len(feedback)),
 	)
 
-	// Add feedback as user comment
-	if err := tc.beadsMgr.AddUserComment(ctx, userID, issue.ID, feedback); err != nil {
-		return fmt.Errorf("failed to add feedback: %w", err)
-	}
-
-	// Kill running agent if any
+	_ = tc.beadsMgr.AddUserComment(ctx, ownerID, issue.ID, feedback)
 	tc.pool.CancelTask(issue.ID)
 
-	// Reopen if closed or in_progress
-	if issue.Status == "closed" || issue.Status == "in_progress" {
-		_ = tc.beadsMgr.ReopenIssue(ctx, userID, issue.ID)
+	if issue.Status != "open" {
+		_ = tc.beadsMgr.ReopenIssue(ctx, ownerID, issue.ID)
 	}
 
-	// React 💬 on the started message
-	startedTS := beads.LabelValue(issue.Labels, "started:")
-	if startedTS != "" {
-		tc.poster.ReactTo(ctx, channelID, startedTS, "speech_balloon", "")
+	// Update started message to show it's being retried with feedback
+	if startedTS := beads.LabelValue(issue.Labels, "started:"); startedTS != "" {
+		msg := status.FormatMessage("💬", issue.ID, issue.Description, nil)
+		_ = tc.poster.UpdateMessage(ctx, channelID, startedTS, msg)
 	}
 
 	return nil
 }
 
-// IsBotMessage checks if a message TS corresponds to a bot-posted status or agent message.
-func (tc *TaskController) IsBotMessage(ctx context.Context, userID, channelID, threadTS, msgTS string) bool {
-	issue, _ := tc.findTaskByMsgTS(ctx, userID, channelID, msgTS)
-	return issue != nil
-}
+func (tc *TaskController) humanBlock(ctx context.Context, userID, channelID string, issue *beads.Issue) {
+	tc.logger.Info("human block", zap.String("issue_id", issue.ID))
 
-// shortID extracts the short suffix from a full issue ID.
-// e.g., "slackW0175971WA3-pda.3" → "pda.3"
-func shortID(fullID string) string {
-	if idx := lastIndex(fullID, '-'); idx >= 0 {
-		return fullID[idx+1:]
-	}
-	return fullID
-}
-
-func lastIndex(s string, b byte) int {
-	for i := len(s) - 1; i >= 0; i-- {
-		if s[i] == b {
-			return i
-		}
-	}
-	return -1
-}
-
-func (tc *TaskController) cancelTask(ctx context.Context, userID, channelID string, issue *beads.Issue, msgTS string) {
-	tc.logger.Info("cancelling task via reaction",
-		zap.String("issue_id", issue.ID),
-	)
-
-	// Kill running agent
+	// Find owner
+	ownerID := tc.ownerOf(issue)
+	_ = tc.beadsMgr.AddLabel(ctx, ownerID, issue.ID, "human:blocked")
 	tc.pool.CancelTask(issue.ID)
 
-	// Close the task
-	_ = tc.beadsMgr.CloseIssue(ctx, userID, issue.ID, "Cancelled by user")
-
-	// Update started message
-	startedTS := beads.LabelValue(issue.Labels, "started:")
-	if startedTS != "" {
-		msg := status.FormatMessage("❌", issue.ID, issue.Description, nil)
+	if startedTS := beads.LabelValue(issue.Labels, "started:"); startedTS != "" {
+		msg := status.FormatMessage("✋", issue.ID, issue.Description, nil)
 		_ = tc.poster.UpdateMessage(ctx, channelID, startedTS, msg)
 	}
 }
 
-func (tc *TaskController) retryTask(ctx context.Context, userID, channelID string, issue *beads.Issue, msgTS string) {
-	tc.logger.Info("retrying task via reaction",
-		zap.String("issue_id", issue.ID),
-	)
+func (tc *TaskController) humanUnblock(ctx context.Context, userID, channelID string, issue *beads.Issue) {
+	tc.logger.Info("human unblock", zap.String("issue_id", issue.ID))
 
-	// Kill running agent
-	tc.pool.CancelTask(issue.ID)
+	ownerID := tc.ownerOf(issue)
+	_ = tc.beadsMgr.RemoveLabel(ctx, ownerID, issue.ID, "human:blocked")
 
-	// Reopen task so poller picks it up
+	// Reopen if it was closed/in_progress
 	if issue.Status != "open" {
-		_ = tc.beadsMgr.ReopenIssue(ctx, userID, issue.ID)
+		_ = tc.beadsMgr.ReopenIssue(ctx, ownerID, issue.ID)
 	}
 
-	// Update started message
-	startedTS := beads.LabelValue(issue.Labels, "started:")
-	if startedTS != "" {
-		msg := status.FormatMessage("🔄", issue.ID, issue.Description, nil)
+	if startedTS := beads.LabelValue(issue.Labels, "started:"); startedTS != "" {
+		msg := status.FormatMessage("👀", issue.ID, issue.Description, nil)
 		_ = tc.poster.UpdateMessage(ctx, channelID, startedTS, msg)
 	}
 }
 
-// findTaskByMsgTS finds a task by checking if the msgTS matches a started: label
-// in any issue for the thread in that channel.
-func (tc *TaskController) findTaskByMsgTS(ctx context.Context, userID, channelID, msgTS string) (*beads.Issue, error) {
-	userDirs := tc.beadsMgr.ListUserDirs()
-	for _, uid := range userDirs {
-		issue, err := tc.beadsMgr.FindIssueByStartedTS(ctx, uid, msgTS)
-		if err == nil && issue != nil {
-			return issue, nil
+// findByStartedTS finds an issue across all users by its started: label.
+func (tc *TaskController) findByStartedTS(ctx context.Context, msgTS string) *beads.Issue {
+	for _, uid := range tc.beadsMgr.ListUserDirs() {
+		issue, _ := tc.beadsMgr.FindIssueByStartedTS(ctx, uid, msgTS)
+		if issue != nil {
+			return issue
 		}
 	}
-	return nil, nil
+	return nil
 }
 
-func min(a, b int) int {
-	if a < b {
-		return a
+// findByID finds an issue across all users by its full ID.
+func (tc *TaskController) findByID(ctx context.Context, taskID string) (string, *beads.Issue) {
+	for _, uid := range tc.beadsMgr.ListUserDirs() {
+		issues, err := tc.beadsMgr.ListIssuesByStatus(ctx, uid, []string{"open", "in_progress"})
+		if err != nil {
+			continue
+		}
+		for _, iss := range issues {
+			if iss.ID == taskID {
+				return uid, iss
+			}
+		}
 	}
-	return b
+	return "", nil
+}
+
+// ownerOf extracts the user ID from issue labels.
+func (tc *TaskController) ownerOf(issue *beads.Issue) string {
+	return beads.LabelValue(issue.Labels, "user:")
 }

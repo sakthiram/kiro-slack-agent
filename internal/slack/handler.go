@@ -22,8 +22,7 @@ type FeatureProcessor interface {
 // TaskController handles reaction-based task control and feedback.
 type TaskController interface {
 	HandleReaction(ctx context.Context, userID, channelID, msgTS, reaction string)
-	HandleFeedback(ctx context.Context, userID, channelID, threadTS, botMsgTS, feedback string) error
-	IsBotMessage(ctx context.Context, userID, channelID, threadTS, msgTS string) bool
+	HandleFeedback(ctx context.Context, userID, channelID, threadTS, taskID, feedback string) error
 }
 
 // Handler handles Slack Socket Mode events.
@@ -345,10 +344,10 @@ func (h *Handler) handleReaction(ev *slackevents.ReactionAddedEvent) {
 		return
 	}
 
-	// Only handle ❌ and 🔄
+	// Only handle ✋ and 👍
 	switch ev.Reaction {
-	case "x", "heavy_multiplication_x", "arrows_counterclockwise":
-		// valid control reactions
+	case "raised_hand", "+1", "thumbsup":
+		// valid human control reactions
 	default:
 		return
 	}
@@ -375,9 +374,10 @@ func (h *Handler) handleReaction(ev *slackevents.ReactionAddedEvent) {
 	}()
 }
 
-// extractFeedbackTarget checks if the message starts with a backtick-wrapped task ID.
-// Returns the task ID if found, empty string otherwise.
-// Example: "`pda.3` fix the build" → "pda.3"
+// extractFeedbackTarget checks if the message starts with a backtick-wrapped full task ID.
+// Only matches at the start of the message. The ID must contain a '-' (full ID format).
+// Example: "`slackW0175971WA3-6ai` fix the build" → "slackW0175971WA3-6ai"
+// Counter-example: "check `slackW0175971WA3-6ai` status" → "" (not at start)
 func extractFeedbackTarget(text string) string {
 	if len(text) < 3 || text[0] != '`' {
 		return ""
@@ -389,7 +389,14 @@ func extractFeedbackTarget(text string) string {
 	if end >= len(text) {
 		return ""
 	}
-	return text[1:end]
+	id := text[1:end]
+	// Must be a full task ID (contains '-')
+	for _, c := range id {
+		if c == '-' {
+			return id
+		}
+	}
+	return ""
 }
 
 // stripTaskPrefix removes the task ID prefix from feedback text.

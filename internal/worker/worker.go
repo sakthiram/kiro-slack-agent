@@ -246,7 +246,8 @@ func (w *Worker) processTask(ctx context.Context, task *queue.TaskWork) {
 			msg := status.FormatMessage("✅", task.IssueID, desc, counts)
 			_ = w.syncer.UpdateMessage(ctx, ch, startedTS, msg)
 		} else if task.Retries < task.MaxRetries {
-			msg := status.FormatMessage("🔁", task.IssueID, desc, counts)
+			emoji := fmt.Sprintf("🔁%s", retryCountEmoji(task.Retries+1))
+			msg := status.FormatMessage(emoji, task.IssueID, desc, counts)
 			_ = w.syncer.UpdateMessage(ctx, ch, startedTS, msg)
 		} else {
 			msg := status.FormatMessage("❌", task.IssueID, desc, counts)
@@ -271,6 +272,16 @@ func (w *Worker) processTask(ctx context.Context, task *queue.TaskWork) {
 	}
 }
 
+
+
+// retryCountEmoji returns a number emoji string for retry count (1-9).
+func retryCountEmoji(n int) string {
+	emojis := []string{"", "1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣"}
+	if n >= 1 && n < len(emojis) {
+		return emojis[n]
+	}
+	return ""
+}
 
 // cancelIfRunning cancels the current task if it matches the given issue ID.
 // Returns true if the task was found and cancelled.

@@ -903,6 +903,27 @@ func (m *Manager) AddLabel(ctx context.Context, userID, issueID, label string) e
 	return nil
 }
 
+// RemoveLabel runs `bd update <id> --remove-label <label>` to remove a label from an issue.
+func (m *Manager) RemoveLabel(ctx context.Context, userID, issueID, label string) error {
+	userDir := m.GetUserDir(userID)
+
+	cmd := bdCmd(ctx, "update", issueID, "--remove-label", label)
+	cmd.Dir = userDir
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		m.logger.Error("failed to remove label",
+			zap.String("issue_id", issueID),
+			zap.String("label", label),
+			zap.String("output", string(output)),
+			zap.Error(err),
+		)
+		return fmt.Errorf("failed to remove label: %w", err)
+	}
+
+	return nil
+}
+
 // HasLabel runs `bd show <id> --json` and checks if label exists in Labels array.
 // Used to check if comment already synced.
 func (m *Manager) HasLabel(ctx context.Context, userID, issueID, label string) bool {

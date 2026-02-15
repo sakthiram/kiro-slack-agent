@@ -188,6 +188,14 @@ func (p *Poller) pollUserTasks(ctx context.Context, userID string) error {
 			continue
 		}
 
+		// Skip human-blocked tasks
+		if beads.HasLabel(task.Labels, "human:blocked") {
+			p.logger.Debug("skipping human-blocked task",
+				zap.String("issue_id", task.ID),
+			)
+			continue
+		}
+
 		// Track thread for blocked task check
 		if ts := beads.LabelValue(task.Labels, "thread:"); ts != "" {
 			threadsSeen[ts] = true
