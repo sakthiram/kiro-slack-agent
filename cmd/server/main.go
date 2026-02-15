@@ -85,9 +85,11 @@ func main() {
 	if cfg.Sync.Enabled {
 		if err := syncer.Restore(ctx); err != nil {
 			logger.Error("failed to restore syncer state", zap.Error(err))
-			// Don't fail startup, just log the error
 		}
 	}
+
+	// 8b. Reset any in_progress tasks to open — no agent is running at startup
+	beadsMgr.ResetInProgressTasks(ctx, logger)
 
 	// 9. Start async services before Slack handler
 	go workerPool.Start(ctx)

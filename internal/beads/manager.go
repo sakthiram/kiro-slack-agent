@@ -479,6 +479,24 @@ func (m *Manager) CloseThreadIssue(ctx context.Context, userID, issueID, reason 
 
 // ListUserDirs lists all user session directories by scanning sessionsBasePath.
 // Returns a list of user IDs that have been initialized.
+
+// ResetInProgressTasks resets all in_progress tasks to open across all users.
+// Called on startup — no agent should be running when the server starts.
+func (m *Manager) ResetInProgressTasks(ctx context.Context, logger *zap.Logger) {
+	for _, userID := range m.ListUserDirs() {
+		issues, err := m.ListIssuesByStatus(ctx, userID, []string{"in_progress"})
+		if err != nil {
+			continue
+		}
+		for _, issue := range issues {
+			logger.Info("resetting stale in_progress task",
+				zap.String("issue_id", issue.ID),
+			)
+			_ = m.ReopenIssue(ctx, userID, issue.ID)
+		}
+	}
+}
+
 func (m *Manager) ListUserDirs() []string {
 	entries, err := os.ReadDir(m.sessionsBasePath)
 	if err != nil {
