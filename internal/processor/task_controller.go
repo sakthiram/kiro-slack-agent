@@ -14,6 +14,7 @@ type WorkerPool interface {
 	ResetTask(issueID string)
 	BlockTask(issueID string)
 	UnblockTask(issueID string)
+	ForceQueue(issueID, userID string, threadInfo *beads.ThreadInfo)
 }
 
 // StatusPoster posts and updates status messages in Slack threads.
@@ -57,7 +58,7 @@ func (tc *TaskController) HandleReaction(ctx context.Context, userID, channelID,
 	case "double_vertical_bar": // ⏸️
 		tc.humanBlock(ctx, userID, channelID, issue)
 	case "+1", "thumbsup":
-		tc.humanUnblock(ctx, userID, channelID, issue)
+		tc.humanForceRun(ctx, userID, channelID, issue)
 	case "checkered_flag": // 🏁
 		tc.humanClose(ctx, userID, channelID, issue)
 	}
@@ -156,6 +157,34 @@ func (tc *TaskController) humanUnblock(ctx context.Context, userID, channelID st
 		_ = tc.poster.UpdateMessage(ctx, channelID, startedTS, msg)
 	}
 }
+
+func (tc *TaskController) humanForceRun(ctx context.Context, userID, channelID string, issue *beads.Issue) {
+	tc.logger.Info("human force run", zap.String("issue_id", issue.ID))
+
+	ownerID := tc.ownerOf(issue)
+	_ = tc.beadsMgr.RemoveLabel(ctx, ownerID, issue.ID, "human:blocked")
+	tc.pool.UnblockTask(issue.ID)
+	tc.pool.ResetTask(issue.ID)
+
+	if issue.Status != "open" {
+		_ = tc.beadsMgr.ReopenIssue(ctx, ownerID, issue.ID)
+	}
+
+	// Force-queue: bypass bd ready, add directly to queue
+	threadInfo := &beads.ThreadInfo{
+		ChannelID: beads.LabelValue(issue.Labels, "channel:"),
+		ThreadTS:  beads.LabelValue(issue.Labels, "thread:"),
+		MessageTS: beads.LabelValue(issue.Labels, "msg:"),
+		UserID:    beads.LabelValue(issue.Labels, "user:"),
+	}
+	tc.pool.ForceQueue(issue.ID, ownerID, threadInfo)
+
+	if startedTS := beads.LabelValue(issue.Labels, "started:"); startedTS != "" {
+		msg := status.FormatMessage("👍", issue.ID, issue.Description, nil)
+		_ = tc.poster.UpdateMessage(ctx, channelID, startedTS, msg)
+	}
+}
+
 
 // findByStartedTS finds an issue across all users by its started: label.
 func (tc *TaskController) findByStartedTS(ctx context.Context, msgTS string) *beads.Issue {

@@ -214,3 +214,21 @@ func (p *WorkerPool) BlockTask(issueID string) {
 func (p *WorkerPool) UnblockTask(issueID string) {
 	p.queue.UnblockTask(issueID)
 }
+
+// ForceQueue adds a task directly to the queue, bypassing bd ready.
+// Used for 👍 override to run blocked tasks immediately.
+func (p *WorkerPool) ForceQueue(issueID, userID string, threadInfo *beads.ThreadInfo) {
+	work := &queue.TaskWork{
+		IssueID:    issueID,
+		UserID:     userID,
+		ThreadInfo: threadInfo,
+		Priority:   1, // high priority for user-forced tasks
+	}
+	ctx := context.Background()
+	if err := p.queue.Add(ctx, work); err != nil {
+		p.logger.Warn("failed to force-queue task",
+			zap.String("issue_id", issueID),
+			zap.Error(err),
+		)
+	}
+}
