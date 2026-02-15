@@ -96,5 +96,10 @@ func LabelValue(labels []string, prefix string) string {
 
 // HasLabel checks if a label with the given prefix exists.
 func HasLabel(labels []string, prefix string) bool {
-	return LabelValue(labels, prefix) != ""
+	for _, l := range labels {
+		if strings.HasPrefix(l, prefix) {
+			return true
+		}
+	}
+	return false
 }
