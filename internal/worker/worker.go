@@ -399,12 +399,15 @@ If a new task BLOCKS this task from completing:
 `, threadTS, channelID, userID, issueID, issueID, issueID)
 	}
 
-	return fmt.Sprintf(`BEFORE ANYTHING ELSE: run 'bd init --stealth' and follow the instructions.
+	return fmt.Sprintf(`You are a task agent working in a project that uses bd (beads) for issue tracking.
+The bd CLI is installed at /opt/homebrew/bin/bd. Use it for all task management.
+
+Start by initializing: bd init --stealth --no-daemon
 
 ## Context
 Channel: %s | Thread: %s | User: %s
 
-## FIRST: Claim This Task
+## Claim This Task
 bd update %s --status in_progress --no-daemon
 %s%s
 ## Current Request (Issue: %s)
