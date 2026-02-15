@@ -190,7 +190,7 @@ func (p *Poller) pollUserTasks(ctx context.Context, userID string) error {
 
 		// Skip human-blocked tasks
 		if beads.HasLabel(task.Labels, "human:blocked") {
-			p.logger.Info("skipping human-blocked task",
+			p.logger.Debug("skipping human-blocked task",
 				zap.String("issue_id", task.ID),
 			)
 			continue
