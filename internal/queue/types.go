@@ -14,7 +14,6 @@ type TaskWork struct {
 	Priority   int
 	Retries    int
 	MaxRetries int
-	UserRetry  bool // true if this is a user-initiated retry (feedback/🔄), doesn't count toward MaxRetries
 	CreatedAt  time.Time
 }
 
