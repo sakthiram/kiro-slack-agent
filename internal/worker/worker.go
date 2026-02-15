@@ -329,18 +329,6 @@ func (w *Worker) processTaskInternal(ctx context.Context, task *queue.TaskWork, 
 
 	result.Response = response
 
-	// Check if the agent actually did work — if the issue is still open after
-	// the agent exited, it means the agent didn't run bd close (or bd update).
-	// Close it to prevent infinite re-queuing by the poller.
-	postIssue, postErr := w.beadsMgr.GetIssue(ctx, task.UserID, task.IssueID)
-	if postErr == nil && postIssue != nil && postIssue.Status == "open" {
-		w.logger.Warn("agent exited without closing task, auto-closing",
-			zap.String("issue_id", task.IssueID),
-		)
-		_ = w.beadsMgr.CloseIssue(ctx, task.UserID, task.IssueID,
-			"Auto-closed: agent exited without updating task status")
-	}
-
 	// NOTE: We don't automatically add the response as a comment.
 	// The agent is responsible for adding its own comment via:
 	//   bd comment <issue_id> "[agent] <final answer>"
