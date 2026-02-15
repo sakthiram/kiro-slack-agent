@@ -116,6 +116,7 @@ func (tc *TaskController) humanBlock(ctx context.Context, userID, channelID stri
 	ownerID := tc.ownerOf(issue)
 	_ = tc.beadsMgr.AddLabel(ctx, ownerID, issue.ID, "human:blocked")
 	tc.pool.CancelTask(issue.ID)
+	_ = tc.beadsMgr.ReopenIssue(ctx, ownerID, issue.ID)
 
 	if startedTS := beads.LabelValue(issue.Labels, "started:"); startedTS != "" {
 		msg := status.FormatMessage("⏸️", issue.ID, issue.Description, nil)
