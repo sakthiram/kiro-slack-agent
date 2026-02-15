@@ -43,8 +43,8 @@ func NewTaskController(
 	}
 }
 
-// HandleReaction processes emoji reactions on bot messages.
-// ✋ = human block, 👍 = human unblock/resume.
+// HandleReaction processes emoji reactions added on bot messages.
+// ⏸️ = human block, 👍 = human unblock/resume.
 func (tc *TaskController) HandleReaction(ctx context.Context, userID, channelID, msgTS, reaction string) {
 	issue := tc.findByStartedTS(ctx, msgTS)
 	if issue == nil {
@@ -52,11 +52,24 @@ func (tc *TaskController) HandleReaction(ctx context.Context, userID, channelID,
 	}
 
 	switch reaction {
-	case "raised_hand":
+	case "double_vertical_bar": // ⏸️
 		tc.humanBlock(ctx, userID, channelID, issue)
 	case "+1", "thumbsup":
 		tc.humanUnblock(ctx, userID, channelID, issue)
 	}
+}
+
+// HandleReactionRemoved processes emoji reactions removed from bot messages.
+// Removing ⏸️ = resume task.
+func (tc *TaskController) HandleReactionRemoved(ctx context.Context, userID, channelID, msgTS, reaction string) {
+	if reaction != "double_vertical_bar" {
+		return
+	}
+	issue := tc.findByStartedTS(ctx, msgTS)
+	if issue == nil {
+		return
+	}
+	tc.humanUnblock(ctx, userID, channelID, issue)
 }
 
 // HandleFeedback adds user feedback to a task, kills the agent, and reopens for re-queue.
@@ -98,7 +111,7 @@ func (tc *TaskController) humanBlock(ctx context.Context, userID, channelID stri
 	tc.pool.CancelTask(issue.ID)
 
 	if startedTS := beads.LabelValue(issue.Labels, "started:"); startedTS != "" {
-		msg := status.FormatMessage("✋", issue.ID, issue.Description, nil)
+		msg := status.FormatMessage("⏸️", issue.ID, issue.Description, nil)
 		_ = tc.poster.UpdateMessage(ctx, channelID, startedTS, msg)
 	}
 }

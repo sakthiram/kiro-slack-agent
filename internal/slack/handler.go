@@ -22,6 +22,7 @@ type FeatureProcessor interface {
 // TaskController handles reaction-based task control and feedback.
 type TaskController interface {
 	HandleReaction(ctx context.Context, userID, channelID, msgTS, reaction string)
+	HandleReactionRemoved(ctx context.Context, userID, channelID, msgTS, reaction string)
 	HandleFeedback(ctx context.Context, userID, channelID, threadTS, taskID, feedback string) error
 }
 
@@ -133,6 +134,8 @@ func (h *Handler) handleCallbackEventSync(event slackevents.EventsAPIEvent) erro
 			h.handleMessage(ev)
 		case *slackevents.ReactionAddedEvent:
 			h.handleReaction(ev)
+		case *slackevents.ReactionRemovedEvent:
+			h.handleReactionRemoved(ev)
 		default:
 			h.logger.Debug("unhandled inner event type", zap.String("type", innerEvent.Type))
 		}
@@ -344,9 +347,9 @@ func (h *Handler) handleReaction(ev *slackevents.ReactionAddedEvent) {
 		return
 	}
 
-	// Only handle ✋ and 👍
+	// Only handle ⏸️ and 👍
 	switch ev.Reaction {
-	case "raised_hand", "+1", "thumbsup":
+	case "double_vertical_bar", "+1", "thumbsup":
 		// valid human control reactions
 	default:
 		return
@@ -371,6 +374,27 @@ func (h *Handler) handleReaction(ev *slackevents.ReactionAddedEvent) {
 			return
 		}
 		h.taskController.HandleReaction(ctx, ev.User, ev.Item.Channel, msgTS, ev.Reaction)
+	}()
+}
+
+
+// handleReactionRemoved processes emoji reaction removal events.
+// Removing ⏸️ resumes a paused task.
+func (h *Handler) handleReactionRemoved(ev *slackevents.ReactionRemovedEvent) {
+	if h.taskController == nil || ev.Item.Type != "message" || ev.Reaction != "double_vertical_bar" {
+		return
+	}
+
+	go func() {
+		ctx := context.Background()
+		msgTS := ""
+		if ev.Item.Message != nil {
+			msgTS = ev.Item.Message.Timestamp
+		}
+		if msgTS == "" {
+			return
+		}
+		h.taskController.HandleReactionRemoved(ctx, ev.User, ev.Item.Channel, msgTS, ev.Reaction)
 	}()
 }
 
