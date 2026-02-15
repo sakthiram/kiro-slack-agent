@@ -125,6 +125,8 @@ func (h *Handler) handleCallbackEvent(event slackevents.EventsAPIEvent) {
 func (h *Handler) handleCallbackEventSync(event slackevents.EventsAPIEvent) error {
 	innerEvent := event.InnerEvent
 
+	h.logger.Debug("callback event", zap.String("type", event.Type), zap.String("inner_type", innerEvent.Type))
+
 	switch event.Type {
 	case slackevents.CallbackEvent:
 		switch ev := innerEvent.Data.(type) {
@@ -137,7 +139,7 @@ func (h *Handler) handleCallbackEventSync(event slackevents.EventsAPIEvent) erro
 		case *slackevents.ReactionRemovedEvent:
 			h.handleReactionRemoved(ev)
 		default:
-			h.logger.Debug("unhandled inner event type", zap.String("type", innerEvent.Type))
+			h.logger.Info("unhandled inner event type", zap.String("type", innerEvent.Type))
 		}
 	default:
 		h.logger.Debug("unhandled events API type", zap.String("type", event.Type))
