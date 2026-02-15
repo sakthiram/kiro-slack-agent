@@ -136,9 +136,10 @@ func (s *CommentSyncer) SyncIssue(ctx context.Context, issueID string) error {
 		}
 
 		// Post the comment to Slack with task ID footer and thread stats
+		// Note: counts may be off by 1 since the current task might not be closed yet
 		footer := fmt.Sprintf("\n\n> 🏷️ task: `%s`", issueID)
 		if open, inProg, done, countErr := s.beadsMgr.GetThreadTaskCounts(ctx, state.UserID, state.SlackThreadTS); countErr == nil && (open+inProg+done) > 0 {
-			footer += fmt.Sprintf("\n> 📊 %d ✅ done · %d 🔄 in progress · %d 📋 open", done, inProg, open)
+			footer += fmt.Sprintf("\n> 👀 %d  ⏳ %d  ✅ %d", open, inProg, done)
 		}
 		content := msg.Content + footer
 		_, err := s.slackClient.PostMessage(
