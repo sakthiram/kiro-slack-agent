@@ -242,7 +242,8 @@ func (w *Worker) processTask(ctx context.Context, task *queue.TaskWork) {
 	w.queue.Complete(result)
 
 	// Update started message with final status
-	if startedTS != "" && task.ThreadInfo != nil {
+	// Skip if task was user-controlled (⏸️/🏁) — their handler already set the message
+	if startedTS != "" && task.ThreadInfo != nil && !w.queue.IsBlocked(task.IssueID) {
 		ch := task.ThreadInfo.ChannelID
 		open, inProg, done, _ := w.beadsMgr.GetThreadTaskCounts(ctx, task.UserID, task.ThreadInfo.ThreadTS)
 		counts := &status.Counts{Open: open, InProgress: inProg, Done: done}
