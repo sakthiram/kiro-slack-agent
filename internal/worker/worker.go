@@ -216,11 +216,18 @@ func (w *Worker) processTask(ctx context.Context, task *queue.TaskWork) {
 	result.Duration = result.CompletedAt.Sub(startTime)
 
 	if err != nil {
-		w.logger.Error("task processing failed",
-			zap.String("issue_id", task.IssueID),
-			zap.Error(err),
-			zap.Duration("duration", result.Duration),
-		)
+		if w.queue.IsBlocked(task.IssueID) {
+			w.logger.Info("task cancelled by user",
+				zap.String("issue_id", task.IssueID),
+				zap.Duration("duration", result.Duration),
+			)
+		} else {
+			w.logger.Error("task processing failed",
+				zap.String("issue_id", task.IssueID),
+				zap.Error(err),
+				zap.Duration("duration", result.Duration),
+			)
+		}
 		result.Success = false
 		result.Error = err
 	} else {
