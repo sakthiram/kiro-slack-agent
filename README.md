@@ -12,13 +12,16 @@ Kiro Slack Agent provides a seamless interface between Slack and the Kiro CLI, a
 - **@Mention Support**: Mention the bot in channels to get help
 - **Thread-Based Conversations**: Each thread maintains context via beads issue tracking
 - **Async Processing**: Messages are queued and processed by a worker pool for scalability
-- **Emoji Reactions**: Real-time progress feedback via emoji (👀 → ⏳ → ✅/🔁/❌)
+- **Task Status Messages**: Each task gets an evolving status message (⛔️→👀→⏳→✅/❌/🔁)
+- **Human Task Control**: Pause (⏸️), resume (remove ⏸️), force-run (👍), close (🏁) via reactions
+- **Feedback Mode**: Reply with `` `taskID` `` prefix to add feedback and restart a task
 - **Issue-Driven Context**: Conversation history stored in beads (bd) for persistence
 - **Comment Sync**: Agent responses automatically sync from beads to Slack threads
-- **Smart Retry**: Automatic retry on failures with visual feedback (🔁 + count emoji)
+- **Smart Retry**: Automatic retry on failures with visual feedback (🔁1️⃣, 🔁2️⃣)
 - **Agent Grace Period**: Prevents race conditions when agents decompose tasks with dependencies
 - **Non-Interactive Execution**: Uses `kiro-cli --no-interactive` for simple, robust integration
-- **Restart Resilience**: State persisted in beads labels - survives restarts without duplicate messages
+- **Restart Resilience**: State persisted in beads labels — survives restarts without duplicate messages
+- **Startup Recovery**: Stale `in_progress` tasks reset to `open` on server start
 - **Thread History Context**: Worker agents can access previous issues from the same conversation thread
 - **Debug Logging**: Optional per-task log files for live tailing agent output (`worker.agent_log`)
 
@@ -71,6 +74,7 @@ The bot requires these **Bot Token Scopes** (OAuth & Permissions):
 | `channels:read` | View basic channel info and list public channels |
 | `chat:write` | Send messages as the bot in channels |
 | `app_mentions:read` | Receive events when users @mention the bot |
+| `reactions:read` | Receive reaction events for task control (⏸️, 👍, 🏁) |
 
 **For Private Channels (Not Recommended):**
 
@@ -102,6 +106,8 @@ Enable **Socket Mode** and subscribe to these events:
 | `message.channels` | Triggers on messages in public channels (for thread replies) |
 | `message.groups` | Triggers on messages in private channels (for thread replies) |
 | `message.im` | Triggers on direct messages to the bot (optional, for DM support) |
+| `reaction_added` | Triggers when a reaction is added (for ⏸️, 👍, 🏁 task control) |
+| `reaction_removed` | Triggers when a reaction is removed (for removing ⏸️ to resume) |
 
 ### Security Considerations
 
@@ -329,6 +335,7 @@ kiro-slack-agent/
 │   │   └── types.go      # Issue, Comment, ThreadInfo types
 │   ├── processor/        # Message processing
 │   │   ├── feature_processor.go  # Creates Feature/Task issues from Slack
+│   │   ├── task_controller.go    # Reaction-based task control and feedback
 │   │   └── message_processor.go  # Legacy synchronous processor
 │   ├── queue/            # Task queue system
 │   │   ├── queue.go      # Channel-based task queue
@@ -386,17 +393,45 @@ Each thread maintains its own Kiro CLI session, preserving full conversation con
 
 ### Response Indicators
 
-The bot uses emoji reactions on your message to show progress:
+The bot uses status messages in the thread to show task progress. Each task gets a single message that updates in place:
 
-| Emoji | Meaning |
-|-------|---------|
-| 👀 | Message received, queued for processing |
-| ⏳ | Agent is actively working on your request |
-| ✅ | Task completed successfully |
-| 🔁 | Task failed, retrying (number emoji shows retry count: 🔁2️⃣ = 2nd retry) |
-| ❌ | Task failed after all retries exhausted |
+| Status Message | Meaning |
+|----------------|---------|
+| ⛔️ Task blocked | Task waiting on dependencies (shows blocker IDs) |
+| 👀 Task | Task queued, waiting for a worker |
+| ⏳ Task | Agent is actively working |
+| ✅ Task | Completed successfully |
+| 🔁1️⃣ Task | Failed, retrying (number shows attempt) |
+| ❌ Task | Failed after all retries exhausted |
+| ⏸️ Task | Paused by user (via ⏸️ reaction) |
+| 🏁 Task | Closed by user (via 🏁 reaction) |
+| 💬 Task | Feedback received, restarting |
+| 👍 Task | Force-run by user (overrides blocked deps) |
 
-Agent responses appear as thread replies with `[agent]` prefix, synced from beads to Slack.
+User's original message gets 👀 as acknowledgment, removed when the status message appears.
+
+### Human Task Control
+
+React on any task's status message to control it:
+
+| Reaction | Action |
+|----------|--------|
+| ⏸️ | **Pause** — kills running agent, blocks task. Poller won't re-queue. |
+| Remove ⏸️ | **Resume** — unblocks task, returns to normal beads dependency flow. |
+| 👍 | **Force run** — unblocks AND queues immediately, ignoring beads dependencies. |
+| 🏁 | **Close** — kills agent, closes the beads task permanently. |
+
+### Feedback Mode
+
+To give feedback to a running or completed task, reply in the thread starting with the full task ID in backticks:
+
+```
+`slackW0175971WA3-6ai` use the amelia-build skill instead
+```
+
+This adds a `[user]` comment to the task, kills the running agent (if any), and reopens the task for re-processing with the new context. Works on closed tasks too — reopens them.
+
+The task ID must be at the **start** of the message and must be a full ID (contains `-`). Mentioning a task ID elsewhere in the message creates a normal new task.
 
 ### Session Management
 
@@ -452,15 +487,25 @@ User Message → Slack → Socket Mode → Handler → Feature Processor
                                                         ↓
                                            Poller (bd ready) → Task Queue
                                            (agent tasks wait 60s grace)
+                                           (human:blocked tasks skipped)
                                                         ↓
                                                 Worker Pool
                                                    ↓    ↓
-                                             React ⏳   kiro-cli --no-interactive
+                                          Post ⏳ msg   kiro-cli --no-interactive
                                                         ↓
                                                Add [agent] comment to beads
                                                         ↓
-                                             React ✅   Comment Syncer → Slack Thread
-                                            (or 🔁/❌)
+                                          Update ✅ msg  Comment Syncer → Slack Thread
+                                          (or 🔁/❌)
+
+User Reaction → Slack → Handler → TaskController
+  ⏸️ → Block (kill agent, add human:blocked label)
+  remove ⏸️ → Unblock (remove label, resume normal flow)
+  👍 → Force run (unblock + queue immediately)
+  🏁 → Close (kill agent, bd close)
+
+User Reply starting with `taskID` → Handler → TaskController.HandleFeedback
+  → Add [user] comment → Kill agent → Reopen task → Poller re-queues
 ```
 
 The architecture is **fully async**: the Slack handler returns immediately after creating the beads issue, and the response arrives via the comment sync loop.
