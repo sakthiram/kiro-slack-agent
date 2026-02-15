@@ -189,7 +189,9 @@ func (w *Worker) processTask(ctx context.Context, task *queue.TaskWork) {
 
 		if startedTS != "" {
 			// Update existing started message
-			_ = w.syncer.UpdateMessage(ctx, task.ThreadInfo.ChannelID, startedTS, msg)
+			if err := w.syncer.UpdateMessage(ctx, task.ThreadInfo.ChannelID, startedTS, msg); err != nil {
+				w.logger.Warn("failed to update started message", zap.String("issue_id", task.IssueID), zap.Error(err))
+			}
 		} else {
 			// Post new started message in thread
 			ts, err := w.syncer.PostInThread(ctx, task.ThreadInfo.ChannelID, task.ThreadInfo.ThreadTS, msg)
@@ -244,14 +246,20 @@ func (w *Worker) processTask(ctx context.Context, task *queue.TaskWork) {
 
 		if result.Success {
 			msg := status.FormatMessage("✅", task.IssueID, desc, counts)
-			_ = w.syncer.UpdateMessage(ctx, ch, startedTS, msg)
+			if err := w.syncer.UpdateMessage(ctx, ch, startedTS, msg); err != nil {
+				w.logger.Warn("failed to update final status", zap.String("issue_id", task.IssueID), zap.Error(err))
+			}
 		} else if task.Retries < task.MaxRetries {
 			emoji := fmt.Sprintf("🔁%s", retryCountEmoji(task.Retries+1))
 			msg := status.FormatMessage(emoji, task.IssueID, desc, counts)
-			_ = w.syncer.UpdateMessage(ctx, ch, startedTS, msg)
+			if err := w.syncer.UpdateMessage(ctx, ch, startedTS, msg); err != nil {
+				w.logger.Warn("failed to update retry status", zap.String("issue_id", task.IssueID), zap.Error(err))
+			}
 		} else {
 			msg := status.FormatMessage("❌", task.IssueID, desc, counts)
-			_ = w.syncer.UpdateMessage(ctx, ch, startedTS, msg)
+			if err := w.syncer.UpdateMessage(ctx, ch, startedTS, msg); err != nil {
+				w.logger.Warn("failed to update failure status", zap.String("issue_id", task.IssueID), zap.Error(err))
+			}
 		}
 	}
 
