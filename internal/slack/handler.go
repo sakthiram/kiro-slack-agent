@@ -342,15 +342,22 @@ func (h *Handler) handleReaction(ev *slackevents.ReactionAddedEvent) {
 		return
 	}
 
-	// Only handle reactions on messages
+	h.logger.Info("reaction_added event",
+		zap.String("reaction", ev.Reaction),
+		zap.String("item_type", ev.Item.Type),
+		zap.String("channel", ev.Item.Channel),
+		zap.String("item_ts", ev.Item.Timestamp),
+		zap.String("user", ev.User),
+	)
+
 	if ev.Item.Type != "message" {
 		return
 	}
 
-	// Only handle ⏸️ and 👍
+	// ⏸️ and 👍
 	switch ev.Reaction {
-	case "double_vertical_bar", "+1", "thumbsup":
-		// valid human control reactions
+	case "double_vertical_bar", "pause_button", "+1", "thumbsup":
+		// valid
 	default:
 		return
 	}
@@ -377,7 +384,11 @@ func (h *Handler) handleReaction(ev *slackevents.ReactionAddedEvent) {
 // handleReactionRemoved processes emoji reaction removal events.
 // Removing ⏸️ resumes a paused task.
 func (h *Handler) handleReactionRemoved(ev *slackevents.ReactionRemovedEvent) {
-	if h.taskController == nil || ev.Item.Type != "message" || ev.Reaction != "double_vertical_bar" {
+	if h.taskController == nil || ev.Item.Type != "message" {
+		return
+	}
+
+	if ev.Reaction != "double_vertical_bar" && ev.Reaction != "pause_button" {
 		return
 	}
 
