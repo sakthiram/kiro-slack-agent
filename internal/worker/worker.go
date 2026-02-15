@@ -264,7 +264,18 @@ func (w *Worker) processTask(ctx context.Context, task *queue.TaskWork) {
 	}
 
 	// Retry logic (after Complete so pending map is cleared for re-add)
-	if !result.Success && task.Retries < task.MaxRetries {
+	// Don't retry if task was cancelled (context error) or human-blocked
+	if !result.Success && task.Retries < task.MaxRetries && ctx.Err() == nil {
+		// Re-check issue labels — task may have been human:blocked while running
+		if freshIssue, err := w.beadsMgr.GetIssue(ctx, task.UserID, task.IssueID); err == nil && freshIssue != nil {
+			if beads.HasLabel(freshIssue.Labels, "human:blocked") {
+				w.logger.Info("skipping retry: task is human-blocked",
+					zap.String("issue_id", task.IssueID),
+				)
+				return
+			}
+		}
+
 		w.logger.Info("retrying task",
 			zap.String("issue_id", task.IssueID),
 			zap.Int("retry_attempt", task.Retries+1),
