@@ -11,6 +11,7 @@ import (
 // WorkerPool defines the interface for cancelling running tasks.
 type WorkerPool interface {
 	CancelTask(issueID string) bool
+	ResetTask(issueID string)
 }
 
 // StatusPoster posts and updates status messages in Slack threads.
@@ -73,6 +74,7 @@ func (tc *TaskController) HandleFeedback(ctx context.Context, userID, channelID,
 
 	_ = tc.beadsMgr.AddUserComment(ctx, ownerID, issue.ID, feedback)
 	tc.pool.CancelTask(issue.ID)
+	tc.pool.ResetTask(issue.ID)
 
 	if issue.Status != "open" {
 		_ = tc.beadsMgr.ReopenIssue(ctx, ownerID, issue.ID)
@@ -106,6 +108,7 @@ func (tc *TaskController) humanUnblock(ctx context.Context, userID, channelID st
 
 	ownerID := tc.ownerOf(issue)
 	_ = tc.beadsMgr.RemoveLabel(ctx, ownerID, issue.ID, "human:blocked")
+	tc.pool.ResetTask(issue.ID)
 
 	// Reopen if it was closed/in_progress
 	if issue.Status != "open" {

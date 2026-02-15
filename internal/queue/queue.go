@@ -13,6 +13,7 @@ type TaskQueue struct {
 	tasks      chan *TaskWork
 	results    chan *TaskResult
 	pending    map[string]*TaskWork // Track pending tasks by IssueID
+	completed  map[string]int       // Track completed tasks and their attempt count
 	mu         sync.RWMutex
 	closed     bool
 	maxRetries int
@@ -24,6 +25,7 @@ func NewTaskQueue(capacity int, maxRetries int) *TaskQueue {
 		tasks:      make(chan *TaskWork, capacity),
 		results:    make(chan *TaskResult, capacity),
 		pending:    make(map[string]*TaskWork),
+		completed:  make(map[string]int),
 		maxRetries: maxRetries,
 	}
 }
@@ -42,6 +44,11 @@ func (q *TaskQueue) Add(ctx context.Context, work *TaskWork) error {
 	// Check for duplicate task
 	if _, exists := q.pending[work.IssueID]; exists {
 		return fmt.Errorf("task %s already in queue", work.IssueID)
+	}
+
+	// Check if task has exhausted retries (poller re-adding a completed task)
+	if attempts, ok := q.completed[work.IssueID]; ok && attempts > q.maxRetries {
+		return fmt.Errorf("task %s exhausted retries (%d)", work.IssueID, attempts)
 	}
 
 	// Set max retries if not already set
@@ -78,7 +85,7 @@ func (q *TaskQueue) Dequeue(ctx context.Context) (*TaskWork, error) {
 }
 
 // Complete marks a task as completed and records the result.
-// Removes the task from the pending map.
+// Removes the task from the pending map and tracks attempt count.
 func (q *TaskQueue) Complete(result *TaskResult) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -86,12 +93,13 @@ func (q *TaskQueue) Complete(result *TaskResult) {
 	// Remove from pending
 	delete(q.pending, result.IssueID)
 
+	// Track attempt count
+	q.completed[result.IssueID]++
+
 	// Send result (non-blocking)
 	select {
 	case q.results <- result:
 	default:
-		// Result channel full, drop result
-		// In production, consider logging this
 	}
 }
 
@@ -105,6 +113,14 @@ func (q *TaskQueue) Pending() int {
 	q.mu.RLock()
 	defer q.mu.RUnlock()
 	return len(q.pending)
+}
+
+// ResetTask clears the completed attempt count for a task.
+// Used when a user explicitly retries a task (feedback/👍) to allow fresh attempts.
+func (q *TaskQueue) ResetTask(issueID string) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	delete(q.completed, issueID)
 }
 
 // Close closes the queue and prevents new tasks from being added.

@@ -199,3 +199,8 @@ func (p *WorkerPool) CancelTask(issueID string) bool {
 	}
 	return false
 }
+
+// ResetTask clears the completed attempt count for a task.
+func (p *WorkerPool) ResetTask(issueID string) {
+	p.queue.ResetTask(issueID)
+}
