@@ -501,7 +501,7 @@ or change approach. Don't update for routine steps.
 
 bd comment %s "[agent] <your concise answer here>" --no-daemon
 
-**When done (and no blockers), close the issue:**
+**IMPORTANT: Always close the issue after your final comment (unless blocked):**
 bd close %s --reason "brief summary" --no-daemon`, channelID, threadTS, userID, issueID, threadHistorySection, labelsSection, issueID, userMessage, issueID, issueID, issueID)
 }
 
