@@ -485,6 +485,13 @@ bd update %s --status in_progress --no-daemon
 Your response to the user is ONLY what you write via bd comment with [agent] prefix.
 Everything else you do (tool calls, thinking, exploration) is NOT sent to Slack.
 
+**For long-running tasks, post progress updates:**
+
+bd comment %s "[agent] 🔍 <brief progress update>" --no-daemon
+
+Post an update when you: discover something significant, complete a major step,
+or change approach. Keep updates to 1-2 sentences. Don't update for routine steps.
+
 **When you have your final answer:**
 
 bd comment %s "[agent] <your concise answer here>" --no-daemon
@@ -496,7 +503,7 @@ bd comment %s "[agent] <your concise answer here>" --no-daemon
 - Anything over 2000 characters
 
 **When done (and no blockers), close the issue:**
-bd close %s --reason "brief summary" --no-daemon`, channelID, threadTS, userID, issueID, threadHistorySection, labelsSection, issueID, userMessage, issueID, issueID)
+bd close %s --reason "brief summary" --no-daemon`, channelID, threadTS, userID, issueID, threadHistorySection, labelsSection, issueID, userMessage, issueID, issueID, issueID)
 }
 
 // extractLabelValue extracts the value from a label with the given prefix.
