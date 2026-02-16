@@ -49,7 +49,7 @@ func (q *TaskQueue) Add(ctx context.Context, work *TaskWork) error {
 	}
 
 	// Check if task has exhausted retries (poller re-adding a completed task)
-	if attempts, ok := q.completed[work.IssueID]; ok && attempts > q.maxRetries {
+	if attempts, ok := q.completed[work.IssueID]; ok && attempts >= q.maxRetries+1 {
 		return fmt.Errorf("task %s exhausted retries (%d)", work.IssueID, attempts)
 	}
 
