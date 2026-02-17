@@ -752,7 +752,7 @@ func (m *Manager) ReopenIssue(ctx context.Context, userID, issueID string) error
 func (m *Manager) GetThreadTaskCounts(ctx context.Context, userID, threadTS string) (open, inProgress, closed int, err error) {
 	userDir := m.GetUserDir(userID)
 
-	cmd := bdCmd(ctx, "list", "--all", "--label", "thread:"+threadTS, "--json", "--allow-stale", "--no-daemon")
+	cmd := bdCmd(ctx, "list", "--all", "--label", "thread:"+threadTS, "--json", "--limit", "0", "--allow-stale", "--no-daemon")
 	cmd.Dir = userDir
 
 	output, err := cmd.Output()
