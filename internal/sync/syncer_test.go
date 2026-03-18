@@ -167,6 +167,10 @@ func (m *mockSlackClient) GetBotUserID() string {
 	return "U123BOT"
 }
 
+func (m *mockSlackClient) MessageExists(ctx context.Context, channelID, ts string) bool {
+	return true
+}
+
 func (m *mockSlackClient) setThreadTS(ts string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

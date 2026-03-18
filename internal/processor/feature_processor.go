@@ -2,6 +2,7 @@ package processor
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/sakthiram/kiro-slack-agent/internal/beads"
@@ -75,6 +76,14 @@ func (p *FeatureProcessor) ProcessMainPost(ctx context.Context, msg *slack.Messa
 	if err != nil {
 		logger.Error("failed to ensure user directory", zap.Error(err))
 		return err
+	}
+
+	// Verify the message actually exists in Slack (guards against phantom/stale events)
+	if !p.slackClient.MessageExists(ctx, msg.ChannelID, msg.MessageTS) {
+		logger.Warn("ignoring phantom message - not found in Slack",
+			zap.String("message_ts", msg.MessageTS),
+		)
+		return fmt.Errorf("message %s not found in channel %s", msg.MessageTS, msg.ChannelID)
 	}
 
 	// Build thread info - for main posts, thread TS is the message TS

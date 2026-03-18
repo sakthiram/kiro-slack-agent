@@ -21,6 +21,7 @@ type ClientInterface interface {
 	UpdateMessage(ctx context.Context, channelID, ts, text string) error
 	AddReaction(ctx context.Context, channelID, ts, emoji string) error
 	RemoveReaction(ctx context.Context, channelID, ts, emoji string) error
+	MessageExists(ctx context.Context, channelID, ts string) bool
 	GetBotUserID() string
 }
 
@@ -146,6 +147,21 @@ func (c *Client) RemoveReaction(ctx context.Context, channelID, ts, emoji string
 		}
 	}
 	return nil
+}
+
+// MessageExists checks whether a message exists in a channel.
+func (c *Client) MessageExists(ctx context.Context, channelID, ts string) bool {
+	params := &slack.GetConversationHistoryParameters{
+		ChannelID: channelID,
+		Latest:    ts,
+		Inclusive: true,
+		Limit:     1,
+	}
+	resp, err := c.api.GetConversationHistoryContext(ctx, params)
+	if err != nil || len(resp.Messages) == 0 {
+		return false
+	}
+	return resp.Messages[0].Timestamp == ts
 }
 
 // GetBotUserID returns the bot's user ID for mention detection.

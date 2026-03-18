@@ -73,6 +73,10 @@ func (m *MockSlackClient) GetBotUserID() string {
 	return m.BotUserID
 }
 
+func (m *MockSlackClient) MessageExists(ctx context.Context, channelID, ts string) bool {
+	return true
+}
+
 func TestMockClient_ImplementsInterface(t *testing.T) {
 	var _ ClientInterface = &MockSlackClient{}
 }

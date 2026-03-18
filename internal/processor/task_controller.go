@@ -2,6 +2,7 @@ package processor
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/sakthiram/kiro-slack-agent/internal/beads"
 	"github.com/sakthiram/kiro-slack-agent/internal/status"
@@ -83,6 +84,18 @@ func (tc *TaskController) HandleFeedback(ctx context.Context, userID, channelID,
 	ownerID, issue := tc.findByID(ctx, taskID)
 	if issue == nil {
 		return nil // not found, let caller fall through to new task
+	}
+
+	// Validate the reply is in the same thread as the target issue.
+	// Without this, a user quoting a task ID from thread A while replying
+	// in thread B would route feedback to the wrong issue.
+	if issueThread := beads.LabelValue(issue.Labels, "thread:"); issueThread != "" && issueThread != threadTS {
+		tc.logger.Warn("feedback thread mismatch, ignoring",
+			zap.String("issue_id", issue.ID),
+			zap.String("issue_thread", issueThread),
+			zap.String("reply_thread", threadTS),
+		)
+		return fmt.Errorf("thread mismatch: reply in %s but issue belongs to %s", threadTS, issueThread)
 	}
 
 	tc.logger.Info("feedback on task",
