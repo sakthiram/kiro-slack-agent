@@ -169,9 +169,26 @@ func (w *Worker) processTask(ctx context.Context, task *queue.TaskWork) {
 
 	// Get issue details for the status message
 	issue, issueErr := w.beadsMgr.GetIssue(ctx, task.UserID, task.IssueID)
+	if issueErr != nil {
+		w.logger.Warn("failed to get issue for banner",
+			zap.String("issue_id", task.IssueID),
+			zap.Error(issueErr),
+		)
+	}
 
 	// Post or update the started status message
 	startedTS := ""
+	if task.ThreadInfo == nil {
+		w.logger.Warn("task has no thread info, skipping banner",
+			zap.String("issue_id", task.IssueID),
+		)
+	} else if task.ThreadInfo.ChannelID == "" || task.ThreadInfo.ThreadTS == "" {
+		w.logger.Warn("task thread info incomplete, skipping banner",
+			zap.String("issue_id", task.IssueID),
+			zap.String("channel_id", task.ThreadInfo.ChannelID),
+			zap.String("thread_ts", task.ThreadInfo.ThreadTS),
+		)
+	}
 	if task.ThreadInfo != nil && task.ThreadInfo.ChannelID != "" && task.ThreadInfo.ThreadTS != "" {
 		// Check if there's already a started message (retry/re-queue)
 		if issue != nil {
@@ -195,7 +212,12 @@ func (w *Worker) processTask(ctx context.Context, task *queue.TaskWork) {
 		} else {
 			// Post new started message in thread
 			ts, err := w.syncer.PostInThread(ctx, task.ThreadInfo.ChannelID, task.ThreadInfo.ThreadTS, msg)
-			if err == nil && ts != "" {
+			if err != nil {
+				w.logger.Warn("failed to post started banner",
+					zap.String("issue_id", task.IssueID),
+					zap.Error(err),
+				)
+			} else if ts != "" {
 				startedTS = ts
 				// Store the started message TS as a label
 				_ = w.beadsMgr.AddLabel(ctx, task.UserID, task.IssueID, "started:"+ts)
@@ -431,7 +453,7 @@ func buildAgentPrompt(issueID, userMessage, threadTS, channelID, userID, threadH
 		threadHistorySection = fmt.Sprintf(`
 ## Conversation History
 %s
-For full history: bd list --all --label thread:%s --json --allow-stale --no-daemon
+For full history: bd list --all --label thread:%s --json
 `, threadHistory, threadTS)
 	} else if threadTS != "" {
 		threadHistorySection = fmt.Sprintf(`
@@ -439,7 +461,7 @@ For full history: bd list --all --label thread:%s --json --allow-stale --no-daem
 
 This task is part of an ongoing conversation thread. To get context from previous work:
 
-bd list --all --label thread:%s --json --allow-stale --no-daemon
+bd list --all --label thread:%s --json
 
 Review closed issues' comments to understand what was previously discussed.
 `, threadTS)
@@ -453,15 +475,15 @@ Review closed issues' comments to understand what was previously discussed.
 
 If you need to create new issues/tasks, **ALWAYS add labels and description** to chain them to this conversation:
 
-bd create "task title" -t task -d "description" -l "thread:%s,channel:%s,user:%s" --no-daemon
+bd create "task title" -t task -d "description" -l "thread:%s,channel:%s,user:%s"
 
 ## Dependencies
 
 If a new task BLOCKS this task from completing:
 1. Create the blocking task with labels (as shown above)
-2. Add blocker: bd dep add %s <new-task-id> --type blocks --no-daemon
-3. Reopen this task: bd update %s --status open --no-daemon
-4. Comment: bd comment %s "[agent] ⏸️ Blocked by <new-task-id>: <reason>" --no-daemon
+2. Add blocker: bd dep add %s <new-task-id> --type blocks
+3. Reopen this task: bd update %s --status open
+4. Comment: bd comment %s "[agent] ⏸️ Blocked by <new-task-id>: <reason>"
 5. Do NOT close this task - it will be re-processed after the blocker is resolved
 `, threadTS, channelID, userID, issueID, issueID, issueID)
 	}
@@ -469,13 +491,13 @@ If a new task BLOCKS this task from completing:
 	return fmt.Sprintf(`You are a task agent working in a project that uses bd (beads) for issue tracking.
 The bd CLI is installed at /opt/homebrew/bin/bd. Use it for all task management.
 
-Start by initializing: bd init --stealth --no-daemon
+Start by initializing: bd init --stealth
 
 ## Context
 Channel: %s | Thread: %s | User: %s
 
 ## Claim This Task
-bd update %s --status in_progress --no-daemon
+bd update %s --status in_progress
 %s%s
 ## Current Request (Issue: %s)
 %s
@@ -492,17 +514,17 @@ All comments MUST:
 
 **For long-running tasks, post progress updates:**
 
-bd comment %s "[agent] 🔍 <brief progress update>" --no-daemon
+bd comment %s "[agent] 🔍 <brief progress update>"
 
 Post an update when you: discover something significant, complete a major step,
 or change approach. Don't update for routine steps.
 
 **When you have your final answer:**
 
-bd comment %s "[agent] <your concise answer here>" --no-daemon
+bd comment %s "[agent] <your concise answer here>"
 
 **IMPORTANT: Always close the issue after your final comment (unless blocked):**
-bd close %s --reason "brief summary" --no-daemon`, channelID, threadTS, userID, issueID, threadHistorySection, labelsSection, issueID, userMessage, issueID, issueID, issueID)
+bd close %s --reason "brief summary"`, channelID, threadTS, userID, issueID, threadHistorySection, labelsSection, issueID, userMessage, issueID, issueID, issueID)
 }
 
 // extractLabelValue extracts the value from a label with the given prefix.

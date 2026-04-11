@@ -49,7 +49,7 @@ type ReadyTask struct {
 
 // Comment represents a comment on an issue.
 type Comment struct {
-	ID        int       `json:"id"`   // bd uses int for comment IDs
+	ID        string    `json:"id"`
 	IssueID   string    `json:"issue_id,omitempty"`
 	Author    string    `json:"author"`
 	Content   string    `json:"text"` // bd uses "text" not "content"
