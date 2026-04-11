@@ -133,7 +133,7 @@ func (m *Manager) bdOutput(userID string, cmd *exec.Cmd) ([]byte, error) {
 		if attempt < bdMaxRetries {
 			if exitErr, ok := err.(*exec.ExitError); ok && isDoltLockError(exitErr.Stderr) {
 				delay := bdRetryBaseDelay * time.Duration(1<<uint(attempt))
-				m.logger.Warn("bd command hit dolt lock, retrying",
+				m.logger.Debug("bd command hit dolt lock, retrying",
 					zap.String("user_id", userID),
 					zap.Int("attempt", attempt+1),
 					zap.Duration("delay", delay),
@@ -171,7 +171,7 @@ func (m *Manager) bdCombinedOutput(userID string, cmd *exec.Cmd) ([]byte, error)
 		}
 		if attempt < bdMaxRetries && isDoltLockError(output) {
 			delay := bdRetryBaseDelay * time.Duration(1<<uint(attempt))
-			m.logger.Warn("bd command hit dolt lock, retrying",
+			m.logger.Debug("bd command hit dolt lock, retrying",
 				zap.String("user_id", userID),
 				zap.Int("attempt", attempt+1),
 				zap.Duration("delay", delay),
