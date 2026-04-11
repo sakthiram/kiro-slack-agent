@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/sakthiram/kiro-slack-agent/internal/config"
 	"go.uber.org/zap"
@@ -38,9 +39,9 @@ func findBdBinary() string {
 	return "bd"
 }
 
-// bdCmd creates an exec.Cmd for bd with --no-daemon appended automatically.
+// bdCmd creates an exec.Cmd for bd.
 func bdCmd(ctx context.Context, args ...string) *exec.Cmd {
-	return exec.CommandContext(ctx, bdBinaryPath, append(args, "--no-daemon")...)
+	return exec.CommandContext(ctx, bdBinaryPath, args...)
 }
 
 // Manager handles per-user beads database operations for tracking Slack thread conversations.
@@ -51,6 +52,8 @@ type Manager struct {
 	logger             *zap.Logger
 	mu                 sync.RWMutex
 	initialized        map[string]bool // track which users have been initialized
+	userLocks          map[string]*sync.Mutex // per-user locks for serializing bd commands
+	userLocksMu        sync.Mutex             // protects userLocks map
 }
 
 // NewManager creates a new beads manager.
@@ -66,22 +69,133 @@ func NewManager(cfg *config.BeadsConfig, logger *zap.Logger) *Manager {
 		contextMaxMessages: cfg.ContextMaxMessages,
 		logger:             logger,
 		initialized:        make(map[string]bool),
+		userLocks:          make(map[string]*sync.Mutex),
 	}
 }
 
 // SyncDB runs `bd sync --import-only` to ensure the database is in sync with JSONL.
+// getUserLock returns the per-user mutex, creating one if needed.
+// This serializes all bd CLI commands for a given user to avoid
+// embedded dolt "exclusive lock" errors.
+func (m *Manager) getUserLock(userID string) *sync.Mutex {
+	m.userLocksMu.Lock()
+	defer m.userLocksMu.Unlock()
+	if l, ok := m.userLocks[userID]; ok {
+		return l
+	}
+	l := &sync.Mutex{}
+	m.userLocks[userID] = l
+	return l
+}
+
+// lockUser acquires the per-user lock and returns an unlock function.
+// Usage: unlock := m.lockUser(userID); defer unlock()
+func (m *Manager) lockUser(userID string) func() {
+	l := m.getUserLock(userID)
+	l.Lock()
+	return l.Unlock
+}
+
+const (
+	bdMaxRetries   = 3
+	bdRetryBaseDelay = 200 * time.Millisecond
+)
+
+// isDoltLockError checks if the error output indicates a dolt exclusive lock conflict.
+func isDoltLockError(output []byte) bool {
+	return strings.Contains(string(output), "another process holds the exclusive lock") ||
+		strings.Contains(string(output), "the embedded backend supports only one writer")
+}
+
+// bdOutput runs cmd.Output() while holding the per-user lock.
+// Retries with backoff on dolt exclusive lock errors (caused by external agent processes).
+func (m *Manager) bdOutput(userID string, cmd *exec.Cmd) ([]byte, error) {
+	// Save cmd info for retries (exec.Cmd can only be started once)
+	dir := cmd.Dir
+	args := cmd.Args[1:] // cmd.Args[0] is the binary path
+
+	unlock := m.lockUser(userID)
+	defer unlock()
+
+	for attempt := 0; attempt <= bdMaxRetries; attempt++ {
+		var c *exec.Cmd
+		if attempt == 0 {
+			c = cmd
+		} else {
+			c = exec.Command(cmd.Path, args...)
+			c.Dir = dir
+		}
+		output, err := c.Output()
+		if err == nil {
+			return output, nil
+		}
+		// Check if this is a dolt lock error worth retrying
+		if attempt < bdMaxRetries {
+			if exitErr, ok := err.(*exec.ExitError); ok && isDoltLockError(exitErr.Stderr) {
+				delay := bdRetryBaseDelay * time.Duration(1<<uint(attempt))
+				m.logger.Warn("bd command hit dolt lock, retrying",
+					zap.String("user_id", userID),
+					zap.Int("attempt", attempt+1),
+					zap.Duration("delay", delay),
+				)
+				time.Sleep(delay)
+				continue
+			}
+		}
+		return output, err
+	}
+	// unreachable, but satisfy compiler
+	return nil, fmt.Errorf("bd command failed after %d retries", bdMaxRetries)
+}
+
+// bdCombinedOutput runs cmd.CombinedOutput() while holding the per-user lock.
+// Retries with backoff on dolt exclusive lock errors.
+func (m *Manager) bdCombinedOutput(userID string, cmd *exec.Cmd) ([]byte, error) {
+	dir := cmd.Dir
+	args := cmd.Args[1:]
+
+	unlock := m.lockUser(userID)
+	defer unlock()
+
+	for attempt := 0; attempt <= bdMaxRetries; attempt++ {
+		var c *exec.Cmd
+		if attempt == 0 {
+			c = cmd
+		} else {
+			c = exec.Command(cmd.Path, args...)
+			c.Dir = dir
+		}
+		output, err := c.CombinedOutput()
+		if err == nil {
+			return output, nil
+		}
+		if attempt < bdMaxRetries && isDoltLockError(output) {
+			delay := bdRetryBaseDelay * time.Duration(1<<uint(attempt))
+			m.logger.Warn("bd command hit dolt lock, retrying",
+				zap.String("user_id", userID),
+				zap.Int("attempt", attempt+1),
+				zap.Duration("delay", delay),
+			)
+			time.Sleep(delay)
+			continue
+		}
+		return output, err
+	}
+	return nil, fmt.Errorf("bd command failed after %d retries", bdMaxRetries)
+}
+
 // This should be called before operations that might fail due to stale db.
 func (m *Manager) SyncDB(ctx context.Context, userID string) error {
 	userDir := m.GetUserDir(userID)
-	return m.syncDBUnlocked(ctx, userDir)
+	return m.syncDBUnlocked(ctx, userID, userDir)
 }
 
 // syncDBUnlocked runs sync without acquiring locks (for internal use when lock is held)
-func (m *Manager) syncDBUnlocked(ctx context.Context, userDir string) error {
+func (m *Manager) syncDBUnlocked(ctx context.Context, userID, userDir string) error {
 	cmd := bdCmd(ctx, "sync", "--import-only")
 	cmd.Dir = userDir
 
-	output, err := cmd.CombinedOutput()
+	output, err := m.bdCombinedOutput(userID, cmd)
 	if err != nil {
 		m.logger.Warn("bd sync failed",
 			zap.String("user_dir", userDir),
@@ -114,9 +228,9 @@ func (m *Manager) EnsureUserDir(ctx context.Context, userID string) (string, err
 		// Verify beads has issue_prefix configured (required for creating issues)
 		checkCmd := bdCmd(ctx, "config", "get", "issue_prefix")
 		checkCmd.Dir = userDir
-		if checkOutput, checkErr := checkCmd.CombinedOutput(); checkErr == nil && len(strings.TrimSpace(string(checkOutput))) > 0 {
+		if checkOutput, checkErr := m.bdCombinedOutput(userID, checkCmd); checkErr == nil && len(strings.TrimSpace(string(checkOutput))) > 0 {
 			// Beads is properly initialized with prefix, sync and mark as initialized
-			_ = m.syncDBUnlocked(ctx, userDir) // Best effort
+			_ = m.syncDBUnlocked(ctx, userID, userDir) // Best effort
 			m.initialized[userID] = true
 			return userDir, nil
 		} else {
@@ -144,7 +258,7 @@ func (m *Manager) EnsureUserDir(ctx context.Context, userID string) (string, err
 	cmd := bdCmd(ctx, "init", "--stealth", "--prefix", m.issuePrefix+userID)
 	cmd.Dir = userDir
 
-	output, err := cmd.CombinedOutput()
+	output, err := m.bdCombinedOutput(userID, cmd)
 	if err != nil {
 		m.logger.Error("failed to initialize beads",
 			zap.String("user_id", userID),
@@ -178,11 +292,11 @@ func (m *Manager) FindThreadIssue(ctx context.Context, userID string, thread *Th
 	cmd := bdCmd(ctx, "list",
 		"--all",
 		"--label", "thread:"+thread.ThreadTS,
-		"--json", "--allow-stale",
+		"--json",
 	)
 	cmd.Dir = userDir
 
-	output, err := cmd.Output()
+	output, err := m.bdOutput(userID, cmd)
 	if err != nil {
 		// No issues found is not an error
 		if exitErr, ok := err.(*exec.ExitError); ok {
@@ -250,7 +364,7 @@ func (m *Manager) CreateThreadIssue(ctx context.Context, userID string, thread *
 	)
 	cmd.Dir = userDir
 
-	output, err := cmd.Output()
+	output, err := m.bdOutput(userID, cmd)
 	if err != nil {
 		m.logger.Error("failed to create issue",
 			zap.String("user_id", userID),
@@ -288,7 +402,7 @@ func (m *Manager) UpdateThreadIssue(ctx context.Context, userID, issueID, role, 
 	cmd := bdCmd(ctx, "comment", issueID, comment)
 	cmd.Dir = userDir
 
-	output, err := cmd.CombinedOutput()
+	output, err := m.bdCombinedOutput(userID, cmd)
 	if err != nil {
 		m.logger.Error("failed to update issue",
 			zap.String("user_id", userID),
@@ -308,10 +422,10 @@ func (m *Manager) GetConversationContext(ctx context.Context, userID, issueID st
 	userDir := m.GetUserDir(userID)
 
 	// Get issue details with comments using bd show
-	cmd := bdCmd(ctx, "show", issueID, "--json", "--allow-stale")
+	cmd := bdCmd(ctx, "show", issueID, "--json")
 	cmd.Dir = userDir
 
-	output, err := cmd.Output()
+	output, err := m.bdOutput(userID, cmd)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get issue: %w", err)
 	}
@@ -359,10 +473,10 @@ func (m *Manager) GetConversationContext(ctx context.Context, userID, issueID st
 func (m *Manager) GetThreadHistory(ctx context.Context, userID, threadTS string, maxTurns int) (string, int, error) {
 	userDir := m.GetUserDir(userID)
 
-	cmd := bdCmd(ctx, "list", "--all", "--label", "thread:"+threadTS, "--json", "--allow-stale")
+	cmd := bdCmd(ctx, "list", "--all", "--label", "thread:"+threadTS, "--json")
 	cmd.Dir = userDir
 
-	output, err := cmd.Output()
+	output, err := m.bdOutput(userID, cmd)
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
 			return "", 0, nil
@@ -463,7 +577,7 @@ func (m *Manager) CloseThreadIssue(ctx context.Context, userID, issueID, reason 
 	cmd := bdCmd(ctx, "close", issueID, "--reason", reason)
 	cmd.Dir = userDir
 
-	output, err := cmd.CombinedOutput()
+	output, err := m.bdCombinedOutput(userID, cmd)
 	if err != nil {
 		m.logger.Error("failed to close issue",
 			zap.String("user_id", userID),
@@ -527,11 +641,10 @@ func (m *Manager) ListUserDirs() []string {
 func (m *Manager) GetReadyTasks(ctx context.Context, userID string) ([]ReadyTask, error) {
 	userDir := m.GetUserDir(userID)
 
-	// Use --allow-stale to prevent failures when db is out of sync
-	cmd := bdCmd(ctx, "ready", "--json", "--allow-stale")
+	cmd := bdCmd(ctx, "ready", "--json")
 	cmd.Dir = userDir
 
-	output, err := cmd.Output()
+	output, err := m.bdOutput(userID, cmd)
 	if err != nil {
 		// No ready tasks is not an error
 		if exitErr, ok := err.(*exec.ExitError); ok {
@@ -571,7 +684,7 @@ func (m *Manager) UpdateTaskStatus(ctx context.Context, userID, issueID, status 
 	cmd := bdCmd(ctx, "update", issueID, "--status", status)
 	cmd.Dir = userDir
 
-	output, err := cmd.CombinedOutput()
+	output, err := m.bdCombinedOutput(userID, cmd)
 	if err != nil {
 		m.logger.Error("failed to update task status",
 			zap.String("user_id", userID),
@@ -605,7 +718,7 @@ func (m *Manager) CreateFeature(ctx context.Context, userID string, thread *Thre
 	cmd := bdCmd(ctx, args...)
 	cmd.Dir = userDir
 
-	output, err := cmd.Output()
+	output, err := m.bdOutput(userID, cmd)
 	if err != nil {
 		m.logger.Error("failed to create feature",
 			zap.String("user_id", userID),
@@ -651,7 +764,7 @@ func (m *Manager) CreateTask(ctx context.Context, userID, parentID string, threa
 	cmd := bdCmd(ctx, args...)
 	cmd.Dir = userDir
 
-	output, err := cmd.Output()
+	output, err := m.bdOutput(userID, cmd)
 	if err != nil {
 		m.logger.Error("failed to create task",
 			zap.String("user_id", userID),
@@ -691,7 +804,7 @@ func (m *Manager) AddAgentComment(ctx context.Context, userID, issueID, content 
 	cmd := bdCmd(ctx, "comment", issueID, comment)
 	cmd.Dir = userDir
 
-	output, err := cmd.CombinedOutput()
+	output, err := m.bdCombinedOutput(userID, cmd)
 	if err != nil {
 		m.logger.Error("failed to add agent comment",
 			zap.String("user_id", userID),
@@ -712,7 +825,7 @@ func (m *Manager) CloseIssue(ctx context.Context, userID, issueID, reason string
 	cmd := bdCmd(ctx, "close", issueID, "--reason", reason)
 	cmd.Dir = userDir
 
-	output, err := cmd.CombinedOutput()
+	output, err := m.bdCombinedOutput(userID, cmd)
 	if err != nil {
 		m.logger.Error("failed to close issue",
 			zap.String("user_id", userID),
@@ -731,10 +844,10 @@ func (m *Manager) CloseIssue(ctx context.Context, userID, issueID, reason string
 func (m *Manager) ReopenIssue(ctx context.Context, userID, issueID string) error {
 	userDir := m.GetUserDir(userID)
 
-	cmd := bdCmd(ctx, "update", issueID, "--status", "open", "--no-daemon")
+	cmd := bdCmd(ctx, "update", issueID, "--status", "open")
 	cmd.Dir = userDir
 
-	output, err := cmd.CombinedOutput()
+	output, err := m.bdCombinedOutput(userID, cmd)
 	if err != nil {
 		m.logger.Error("failed to reopen issue",
 			zap.String("user_id", userID),
@@ -752,10 +865,10 @@ func (m *Manager) ReopenIssue(ctx context.Context, userID, issueID string) error
 func (m *Manager) GetThreadTaskCounts(ctx context.Context, userID, threadTS string) (open, inProgress, closed int, err error) {
 	userDir := m.GetUserDir(userID)
 
-	cmd := bdCmd(ctx, "list", "--all", "--label", "thread:"+threadTS, "--json", "--limit", "0", "--allow-stale", "--no-daemon")
+	cmd := bdCmd(ctx, "list", "--all", "--label", "thread:"+threadTS, "--json", "--limit", "0")
 	cmd.Dir = userDir
 
-	output, err := cmd.Output()
+	output, err := m.bdOutput(userID, cmd)
 	if err != nil {
 		return 0, 0, 0, nil // no issues is fine
 	}
@@ -782,10 +895,10 @@ func (m *Manager) GetThreadTaskCounts(ctx context.Context, userID, threadTS stri
 func (m *Manager) GetIssue(ctx context.Context, userID, issueID string) (*Issue, error) {
 	userDir := m.GetUserDir(userID)
 
-	cmd := bdCmd(ctx, "show", issueID, "--json", "--allow-stale")
+	cmd := bdCmd(ctx, "show", issueID, "--json")
 	cmd.Dir = userDir
 
-	output, err := cmd.Output()
+	output, err := m.bdOutput(userID, cmd)
 	if err != nil {
 		m.logger.Error("failed to get issue",
 			zap.String("user_id", userID),
@@ -815,10 +928,10 @@ func (m *Manager) GetBlockedTasks(ctx context.Context, userID, threadTS string) 
 	userDir := m.GetUserDir(userID)
 
 	// Get all open issues for this thread
-	cmd := bdCmd(ctx, "list", "--status", "open", "--label", "thread:"+threadTS, "--json", "--allow-stale")
+	cmd := bdCmd(ctx, "list", "--status", "open", "--label", "thread:"+threadTS, "--json")
 	cmd.Dir = userDir
 
-	output, err := cmd.Output()
+	output, err := m.bdOutput(userID, cmd)
 	if err != nil {
 		return nil, nil
 	}
@@ -879,10 +992,10 @@ func (m *Manager) AddUserComment(ctx context.Context, userID, issueID, content s
 func (m *Manager) FindIssueByStartedTS(ctx context.Context, userID, msgTS string) (*Issue, error) {
 	userDir := m.GetUserDir(userID)
 
-	cmd := bdCmd(ctx, "list", "--all", "--label", "started:"+msgTS, "--json", "--allow-stale")
+	cmd := bdCmd(ctx, "list", "--all", "--label", "started:"+msgTS, "--json")
 	cmd.Dir = userDir
 
-	output, err := cmd.Output()
+	output, err := m.bdOutput(userID, cmd)
 	if err != nil {
 		return nil, nil
 	}
@@ -906,7 +1019,7 @@ func (m *Manager) AddLabel(ctx context.Context, userID, issueID, label string) e
 	cmd := bdCmd(ctx, "update", issueID, "--add-label", label)
 	cmd.Dir = userDir
 
-	output, err := cmd.CombinedOutput()
+	output, err := m.bdCombinedOutput(userID, cmd)
 	if err != nil {
 		m.logger.Error("failed to add label",
 			zap.String("user_id", userID),
@@ -928,7 +1041,7 @@ func (m *Manager) RemoveLabel(ctx context.Context, userID, issueID, label string
 	cmd := bdCmd(ctx, "update", issueID, "--remove-label", label)
 	cmd.Dir = userDir
 
-	output, err := cmd.CombinedOutput()
+	output, err := m.bdCombinedOutput(userID, cmd)
 	if err != nil {
 		m.logger.Error("failed to remove label",
 			zap.String("issue_id", issueID),
@@ -974,10 +1087,10 @@ func (m *Manager) ListIssuesByStatus(ctx context.Context, userID string, statuse
 	// Build comma-separated status list
 	statusList := strings.Join(statuses, ",")
 
-	cmd := bdCmd(ctx, "list", "--status", statusList, "--json", "--allow-stale")
+	cmd := bdCmd(ctx, "list", "--status", statusList, "--json")
 	cmd.Dir = userDir
 
-	output, err := cmd.Output()
+	output, err := m.bdOutput(userID, cmd)
 	if err != nil {
 		// No issues found is not an error
 		if exitErr, ok := err.(*exec.ExitError); ok {
