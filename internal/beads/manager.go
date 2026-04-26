@@ -255,7 +255,7 @@ func (m *Manager) EnsureUserDir(ctx context.Context, userID string) (string, err
 	}
 
 	// Initialize beads with bd init
-	cmd := bdCmd(ctx, "init", "--stealth", "--prefix", m.issuePrefix+userID)
+	cmd := bdCmd(ctx, "init", "--stealth", "--server", "--prefix", m.issuePrefix+userID)
 	cmd.Dir = userDir
 
 	output, err := m.bdCombinedOutput(userID, cmd)
@@ -753,7 +753,7 @@ func (m *Manager) CreateTask(ctx context.Context, userID, parentID string, threa
 	labels := strings.Join(thread.Labels(), ",")
 
 	// Create task with bd create
-	args := []string{"create", title, "-t", "task", "--parent", parentID, "--json"}
+	args := []string{"create", title, "-t", "task", "--parent", parentID, "--no-inherit-labels", "--json"}
 	if desc != "" {
 		args = append(args, "-d", desc)
 	}

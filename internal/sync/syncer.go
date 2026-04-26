@@ -239,7 +239,13 @@ func (s *CommentSyncer) syncAll(ctx context.Context) {
 				zap.String("issue_id", issueID),
 				zap.Error(err),
 			)
-			// Continue with other issues even if one fails
+			// Unregister issues that no longer exist in bd (e.g. after migration)
+			if strings.Contains(err.Error(), "failed to get issue") {
+				s.logger.Warn("unregistering stale issue from sync tracker",
+					zap.String("issue_id", issueID),
+				)
+				s.tracker.Unregister(issueID)
+			}
 		}
 	}
 }
